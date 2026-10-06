@@ -4,19 +4,31 @@ type IceCandidateCallback = (candidate: RTCIceCandidate) => void;
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
 ];
 
 export class WebRTCManager {
   private pc: RTCPeerConnection | null = null;
+  private remoteStream: MediaStream | null = null;
   private onRemoteStream: RemoteStreamCallback | null = null;
   private onIceCandidate: IceCandidateCallback | null = null;
+  private candidateQueue: RTCIceCandidateInit[] = [];
 
   async createPeerConnection(iceServers: RTCIceServer[] = DEFAULT_ICE_SERVERS): Promise<RTCPeerConnection> {
     if (this.pc) {
-      this.pc.close();
+      this.close();
     }
 
-    this.pc = new RTCPeerConnection({ iceServers });
+    this.remoteStream = new MediaStream();
+    this.candidateQueue = [];
+
+    this.pc = new RTCPeerConnection({
+      iceServers,
+      iceCandidatePoolSize: 10,
+    });
 
     this.pc.onicecandidate = (event) => {
       if (event.candidate && this.onIceCandidate) {
@@ -25,9 +37,28 @@ export class WebRTCManager {
     };
 
     this.pc.ontrack = (event) => {
-      const [remoteStream] = event.streams;
-      if (remoteStream && this.onRemoteStream) {
-        this.onRemoteStream(remoteStream);
+      console.log('[WebRTC] Received remote track:', event.track.kind, event.track.id);
+      
+      if (!this.remoteStream) {
+        this.remoteStream = new MediaStream();
+      }
+
+      // Add track to remote stream if not already present
+      if (!this.remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+        this.remoteStream.addTrack(event.track);
+      }
+
+      // If streams were attached directly, also merge them
+      if (event.streams && event.streams[0]) {
+        event.streams[0].getTracks().forEach((track) => {
+          if (this.remoteStream && !this.remoteStream.getTracks().some((t) => t.id === track.id)) {
+            this.remoteStream.addTrack(track);
+          }
+        });
+      }
+
+      if (this.onRemoteStream && this.remoteStream) {
+        this.onRemoteStream(this.remoteStream);
       }
     };
 
@@ -36,16 +67,25 @@ export class WebRTCManager {
     };
 
     this.pc.oniceconnectionstatechange = () => {
-      console.log('[WebRTC] ICE state:', this.pc?.iceConnectionState);
+      console.log('[WebRTC] ICE connection state:', this.pc?.iceConnectionState);
     };
 
     return this.pc;
   }
 
+  isInitialized(): boolean {
+    return this.pc !== null;
+  }
+
   addLocalStream(stream: MediaStream) {
     if (!this.pc) throw new Error('PeerConnection not initialized');
     stream.getTracks().forEach((track) => {
-      this.pc!.addTrack(track, stream);
+      // Avoid duplicate tracks
+      const senders = this.pc!.getSenders();
+      const exists = senders.some((s) => s.track?.id === track.id);
+      if (!exists) {
+        this.pc!.addTrack(track, stream);
+      }
     });
   }
 
@@ -61,7 +101,10 @@ export class WebRTCManager {
 
   async createAnswer(): Promise<RTCSessionDescriptionInit> {
     if (!this.pc) throw new Error('PeerConnection not initialized');
-    const answer = await this.pc.createAnswer();
+    const answer = await this.pc.createAnswer({
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: true,
+    });
     await this.pc.setLocalDescription(answer);
     return answer;
   }
@@ -69,20 +112,40 @@ export class WebRTCManager {
   async handleOffer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit> {
     if (!this.pc) throw new Error('PeerConnection not initialized');
     await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
+    await this.drainCandidateQueue();
     return this.createAnswer();
   }
 
   async handleAnswer(answer: RTCSessionDescriptionInit): Promise<void> {
     if (!this.pc) throw new Error('PeerConnection not initialized');
     await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+    await this.drainCandidateQueue();
   }
 
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-    if (!this.pc) return;
+    if (!this.pc || !this.pc.remoteDescription || !this.pc.remoteDescription.type) {
+      // Queue until remoteDescription is set to avoid WebRTC drop
+      this.candidateQueue.push(candidate);
+      return;
+    }
+
     try {
       await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (err) {
       console.error('[WebRTC] Failed to add ICE candidate:', err);
+    }
+  }
+
+  private async drainCandidateQueue() {
+    while (this.candidateQueue.length > 0) {
+      const candidate = this.candidateQueue.shift();
+      if (candidate && this.pc) {
+        try {
+          await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.warn('[WebRTC] Error draining queued candidate:', err);
+        }
+      }
     }
   }
 
@@ -111,6 +174,8 @@ export class WebRTCManager {
       this.pc.close();
       this.pc = null;
     }
+    this.remoteStream = null;
+    this.candidateQueue = [];
     this.onRemoteStream = null;
     this.onIceCandidate = null;
   }

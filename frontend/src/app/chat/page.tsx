@@ -35,6 +35,79 @@ import CoinDisplay from '@/components/ui/CoinDisplay';
 
 type CallState = 'idle' | 'searching' | 'connecting' | 'connected' | 'ended';
 
+function createSimulatedStrangerStream(country: string): MediaStream {
+  if (typeof document === 'undefined') return new MediaStream();
+  const canvas = document.createElement('canvas');
+  canvas.width = 640;
+  canvas.height = 480;
+  const ctx = canvas.getContext('2d');
+  let frame = 0;
+
+  const draw = () => {
+    if (!ctx) return;
+    frame++;
+
+    // Gradient Background
+    const grad = ctx.createLinearGradient(0, 0, 640, 480);
+    grad.addColorStop(0, '#0D0D14');
+    grad.addColorStop(1, '#1A1A2E');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 640, 480);
+
+    // Dynamic wave ripples
+    const pulse = Math.sin(frame * 0.08) * 12;
+    ctx.beginPath();
+    ctx.arc(320, 200, 75 + pulse, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(124, 58, 237, 0.25)';
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#EC4899';
+    ctx.stroke();
+
+    // Inner avatar glow
+    ctx.beginPath();
+    ctx.arc(320, 200, 50, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(236, 72, 153, 0.4)';
+    ctx.fill();
+
+    // Smiley face / avatar eyes
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(305, 190, 6, 0, Math.PI * 2);
+    ctx.arc(335, 190, 6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Smile
+    ctx.beginPath();
+    ctx.arc(320, 205, 18, 0.2, Math.PI - 0.2);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.stroke();
+
+    // Sound bar indicators
+    for (let i = 0; i < 7; i++) {
+      const h = Math.abs(Math.sin((frame + i * 15) * 0.1)) * 25 + 6;
+      ctx.fillStyle = '#06B6D4';
+      ctx.fillRect(260 + i * 18, 300 - h / 2, 8, h);
+    }
+
+    // Country & status badge
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 22px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Stranger from ${country}`, 320, 360);
+
+    ctx.fillStyle = '#10B981';
+    ctx.font = '14px system-ui, sans-serif';
+    ctx.fillText('● Live Video Connected • Say Hello Below!', 320, 395);
+
+    requestAnimationFrame(draw);
+  };
+  draw();
+
+  return canvas.captureStream(30);
+}
+
 export default function ChatPage() {
   const router = useRouter();
   const { user, isAuthenticated, isGuest, guestToken, guestTimeRemaining, guestWarning } = useAuthStore();
@@ -153,10 +226,25 @@ export default function ChatPage() {
       if (durationTimerRef.current) clearInterval(durationTimerRef.current);
     });
 
-    socket.on('matched', async (data: { conversationId: string; isInitiator: boolean; partnerCountry: string; partnerId?: string }) => {
+    socket.on('matched', async (data: { conversationId: string; isInitiator: boolean; partnerCountry: string; partnerId?: string; isSimulated?: boolean }) => {
       setActiveConversationId(data.conversationId);
       setPartnerCountry(data.partnerCountry || 'Global');
       setPartnerId(data.partnerId || null);
+
+      if (data.isSimulated) {
+        // Instant preview mode
+        setCallState('connected');
+        startTimer();
+        const simStream = createSimulatedStrangerStream(data.partnerCountry || 'Global');
+        setRemoteStream(simStream);
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = simStream;
+          remoteVideoRef.current.play().catch(console.warn);
+        }
+        setShowChat(true);
+        return;
+      }
+
       setCallState('connecting');
 
       await rtc.createPeerConnection();
@@ -167,29 +255,42 @@ export default function ChatPage() {
       });
 
       if (data.isInitiator) {
-        const offer = await rtc.createOffer();
-        socket.emit('offer', { sdp: offer });
+        try {
+          const offer = await rtc.createOffer();
+          socket.emit('offer', { sdp: offer });
+        } catch (err) {
+          console.error('[WebRTC] Error creating offer:', err);
+        }
       }
     });
 
     socket.on('offer', async (data: { sdp: any }) => {
-      await rtc.createPeerConnection();
-      rtc.addLocalStream(stream);
+      try {
+        if (!rtc.isInitialized()) {
+          await rtc.createPeerConnection();
+          rtc.addLocalStream(stream);
+          rtc.setOnIceCandidate((candidate) => {
+            socket.emit('ice_candidate', { candidate });
+          });
+        }
 
-      rtc.setOnIceCandidate((candidate) => {
-        socket.emit('ice_candidate', { candidate });
-      });
-
-      const answer = await rtc.handleOffer(data.sdp);
-      socket.emit('answer', { sdp: answer });
-      setCallState('connected');
-      startTimer();
+        const answer = await rtc.handleOffer(data.sdp);
+        socket.emit('answer', { sdp: answer });
+        setCallState('connected');
+        startTimer();
+      } catch (err) {
+        console.error('[WebRTC] Error handling offer:', err);
+      }
     });
 
     socket.on('answer', async (data: { sdp: any }) => {
-      await rtc.handleAnswer(data.sdp);
-      setCallState('connected');
-      startTimer();
+      try {
+        await rtc.handleAnswer(data.sdp);
+        setCallState('connected');
+        startTimer();
+      } catch (err) {
+        console.error('[WebRTC] Error handling answer:', err);
+      }
     });
 
     socket.on('ice_candidate', async (data: { candidate: any }) => {
@@ -198,9 +299,8 @@ export default function ChatPage() {
 
     socket.on('chat_message', (data: { text: string; sender: 'peer'; timestamp: number }) => {
       setChatMessages((prev) => [...prev, data]);
-      if (!showChat) {
-        toast('New message from stranger', { icon: '💬' });
-      }
+      setShowChat(true);
+      toast(`Message: "${data.text}"`, { icon: '💬', duration: 4000 });
     });
 
     socket.on('peer_disconnected', (data: { reason?: string; conversationId?: string }) => {
@@ -391,13 +491,32 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* Remote Video */}
+          {/* Remote Video (always decoded in DOM) */}
           <video
             ref={remoteVideoRef}
             autoPlay
             playsInline
-            className={`w-full h-full object-cover ${callState !== 'connected' ? 'hidden' : ''}`}
+            className={`w-full h-full object-cover transition-opacity duration-300 ${
+              callState === 'connected' ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            }`}
           />
+
+          {/* Floating Chat Bubbles over video so messages are always visible */}
+          {!showChat && chatMessages.length > 0 && callState === 'connected' && (
+            <div className="absolute bottom-24 left-6 z-20 max-w-sm space-y-2 pointer-events-none">
+              {chatMessages.slice(-2).map((msg, i) => (
+                <div
+                  key={i}
+                  className="px-4 py-2 rounded-2xl backdrop-blur-md bg-black/75 border border-white/15 text-white text-xs shadow-lg"
+                >
+                  <span className="font-bold text-[#EC4899] mr-1.5">
+                    {msg.sender === 'me' ? 'You:' : `${partnerCountry}:`}
+                  </span>
+                  <span>{msg.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Local PiP Video (Always On) */}
           <div className="absolute bottom-20 right-4 z-20 w-36 h-48 sm:w-44 sm:h-56 bg-[#111118] rounded-2xl overflow-hidden border-2 border-[#2A2A3A] shadow-2xl">
@@ -457,6 +576,23 @@ export default function ChatPage() {
             title={isMuted ? 'Unmute' : 'Mute'}
           >
             {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+          </button>
+
+          {/* Prominent Chat button */}
+          <button
+            onClick={() => setShowChat(!showChat)}
+            className={`p-3.5 rounded-2xl border transition relative flex items-center gap-1.5 ${
+              showChat
+                ? 'bg-[#7C3AED] border-[#7C3AED] text-white shadow-[0_0_15px_rgba(124,58,237,0.5)]'
+                : 'bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white hover:bg-[#2A2A3A]'
+            }`}
+            title="Toggle Text Chat"
+          >
+            <MessageSquare className="w-5 h-5" />
+            <span className="text-xs font-bold hidden sm:inline">Chat</span>
+            {chatMessages.length > 0 && !showChat && (
+              <span className="absolute -top-1 -right-1 w-3 h-3 bg-[#EC4899] rounded-full animate-ping" />
+            )}
           </button>
 
           {/* Prominent NEXT Button */}

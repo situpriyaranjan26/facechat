@@ -185,8 +185,6 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
         if (session.activeConversationId) {
           startConversation(session.activeConversationId);
         }
-        // Respond with loopback answer
-        socket.emit('answer', { sdp: data.sdp });
       } else if (session.matchedPeerSocketId) {
         io.to(session.matchedPeerSocketId).emit('offer', { sdp: data.sdp });
       }
