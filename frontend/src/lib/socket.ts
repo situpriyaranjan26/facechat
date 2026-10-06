@@ -1,6 +1,24 @@
 import { io, Socket } from 'socket.io-client'
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:4000'
+export function getWsUrl(): string {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('facechat_backend_url');
+    if (custom) return custom.replace(/\/+$/, '');
+
+    const envUrl = process.env.NEXT_PUBLIC_WS_URL;
+    if (envUrl && !envUrl.includes('localhost')) {
+      return envUrl.replace(/\/+$/, '');
+    }
+
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      if (window.location.hostname.includes('onrender.com')) {
+        return 'https://facechat-backend-5dbq.onrender.com';
+      }
+      return `${window.location.protocol}//${window.location.host}`;
+    }
+  }
+  return process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:4000';
+}
 
 let socket: Socket | null = null
 
@@ -12,10 +30,11 @@ export function connect(token?: string, guestToken?: string): Socket {
   if (socket?.connected) return socket
 
   const auth: Record<string, string> = {}
-  if (token) auth.token = token
+  const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('facechat_token') || undefined : undefined);
+  if (activeToken) auth.token = activeToken
   if (guestToken) auth.guestToken = guestToken
 
-  socket = io(WS_URL, {
+  socket = io(getWsUrl(), {
     withCredentials: true,
     auth,
     transports: ['websocket', 'polling'],

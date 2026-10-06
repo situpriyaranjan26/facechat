@@ -2,24 +2,33 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { Mail, ArrowLeft } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Mail, ArrowLeft, KeyRound, CheckCircle2, ArrowRight, Loader2 } from 'lucide-react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 
 export default function ForgotPasswordPage() {
+  const router = useRouter();
   const [email, setEmail] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [resetToken, setResetToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      await api.post('/auth/forgot-password', { email });
+      const res = await api.post('/auth/forgot-password', { email });
       setSubmitted(true);
-      toast.success('Reset email sent if account exists.');
-    } catch {
-      toast.error('Failed to submit request.');
+      if (res.data?.resetToken) {
+        setResetToken(res.data.resetToken);
+        toast.success('Password reset token generated!');
+      } else {
+        toast.success('Reset email sent if account exists.');
+      }
+    } catch (err: any) {
+      const msg = err.friendlyMessage || err.response?.data?.error || err.message || 'Failed to submit request.';
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -33,14 +42,51 @@ export default function ForgotPasswordPage() {
           <span>Back to login</span>
         </Link>
 
-        <h1 className="text-2xl font-bold text-white mb-2">Reset Password</h1>
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-2xl bg-[#7C3AED]/20 border border-[#7C3AED]/40 flex items-center justify-center text-[#7C3AED]">
+            <KeyRound className="w-5 h-5" />
+          </div>
+          <h1 className="text-2xl font-bold text-white">Reset Password</h1>
+        </div>
         <p className="text-sm text-[#8B8BA7] mb-6">
-          Enter your account email and we'll send you instructions to reset your password.
+          Enter your registered email address to receive password reset instructions.
         </p>
 
         {submitted ? (
-          <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl text-center text-sm text-emerald-400">
-            Check your inbox for password reset instructions.
+          <div className="space-y-4">
+            <div className="p-5 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl text-emerald-300">
+              <div className="flex items-center gap-2 mb-2 font-semibold">
+                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                <span>Reset Request Processed</span>
+              </div>
+              <p className="text-xs text-[#8B8BA7]">
+                If an account matches <strong>{email}</strong>, a reset token was prepared for you.
+              </p>
+            </div>
+
+            {resetToken ? (
+              <div className="p-4 bg-[#1A1A26] border border-[#2A2A3A] rounded-2xl space-y-3">
+                <p className="text-xs text-[#8B8BA7]">
+                  Instant access: You can set your new password directly below.
+                </p>
+                <button
+                  onClick={() => router.push(`/auth/reset-password?token=${resetToken}`)}
+                  className="w-full py-3.5 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#EC4899] text-white font-bold text-sm hover:opacity-90 transition flex items-center justify-center gap-2 shadow-lg shadow-purple-500/20"
+                >
+                  <span>Set New Password Now</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <div className="text-center pt-2">
+                <Link
+                  href="/auth/reset-password"
+                  className="text-xs text-[#EC4899] hover:underline"
+                >
+                  Have a reset token? Enter it here &rarr;
+                </Link>
+              </div>
+            )}
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -62,10 +108,26 @@ export default function ForgotPasswordPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-4 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#EC4899] text-white font-bold text-base hover:opacity-90 transition disabled:opacity-50"
+              className="w-full py-4 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#EC4899] text-white font-bold text-base hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {loading ? 'Sending...' : 'Send Reset Link'}
+              {loading ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span>Generating Link...</span>
+                </>
+              ) : (
+                'Send Reset Instructions'
+              )}
             </button>
+
+            <div className="text-center pt-2">
+              <Link
+                href="/auth/reset-password"
+                className="text-xs text-[#8B8BA7] hover:text-white transition"
+              >
+                Already have a reset token? Click here
+              </Link>
+            </div>
           </form>
         )}
       </div>

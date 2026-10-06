@@ -22,7 +22,7 @@ router.post(
       res.cookie('token', token, {
         httpOnly: true,
         secure: config.server.nodeEnv === 'production',
-        sameSite: 'lax',
+        sameSite: config.server.nodeEnv === 'production' ? 'none' : 'lax',
         maxAge: 7 * 24 * 60 * 60 * 1000,
       });
       res.status(201).json({
@@ -53,7 +53,7 @@ router.post(
       res.cookie('token', token, {
         httpOnly: true,
         secure: config.server.nodeEnv === 'production',
-        sameSite: 'lax',
+        sameSite: config.server.nodeEnv === 'production' ? 'none' : 'lax',
         maxAge: 7 * 24 * 60 * 60 * 1000,
       });
       res.json({ token, user: { id: user.id, email: user.email, displayName: user.displayName, isAdmin: user.isAdmin } });
@@ -113,8 +113,12 @@ router.post(
   validate(forgotPasswordSchema),
   async (req: Request, res: Response) => {
     try {
-      await authService.forgotPassword(req.body.email);
-      res.json({ message: 'If that email exists, a reset link has been sent.' });
+      const result = await authService.forgotPassword(req.body.email);
+      res.json({
+        message: 'If that email exists, reset instructions have been generated.',
+        resetToken: result?.resetToken,
+        resetUrl: result?.resetUrl,
+      });
     } catch (err: any) {
       res.status(err.statusCode || 500).json({ error: err.message });
     }

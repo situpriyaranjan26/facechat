@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { LogIn, Mail, Lock } from 'lucide-react';
+import { LogIn, Mail, Lock, Loader2 } from 'lucide-react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '@/store/authStore';
@@ -14,17 +14,43 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showWakeupNotice, setShowWakeupNotice] = useState(false);
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (loading) {
+      timer = setTimeout(() => {
+        setShowWakeupNotice(true);
+      }, 3500);
+    } else {
+      setShowWakeupNotice(false);
+    }
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { email, password });
-      login(res.data.data.user);
+      const user = res.data?.user || res.data?.data?.user;
+      const token = res.data?.token || res.data?.data?.token;
+
+      if (token && typeof window !== 'undefined') {
+        localStorage.setItem('facechat_token', token);
+      }
+      if (user) {
+        login(user);
+      }
       toast.success('Welcome back!');
       router.push('/chat');
     } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Invalid credentials');
+      const errorMsg =
+        err.friendlyMessage ||
+        err.response?.data?.error ||
+        err.message ||
+        'Invalid credentials. Please try again.';
+      toast.error(errorMsg, { duration: 5000 });
     } finally {
       setLoading(false);
     }
@@ -77,12 +103,26 @@ export default function LoginPage() {
             </div>
           </div>
 
+          {showWakeupNotice && (
+            <div className="p-3 bg-violet-950/40 border border-violet-800/40 rounded-xl text-xs text-violet-300 flex items-center gap-2 animate-pulse">
+              <Loader2 className="w-4 h-4 animate-spin shrink-0 text-violet-400" />
+              <span>Connecting to server... Render free-tier backend may take a moment to wake up.</span>
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-4 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#EC4899] text-white font-bold text-base hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50"
+            className="w-full py-4 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#EC4899] text-white font-bold text-base hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            {loading ? 'Logging in...' : 'Log In'}
+            {loading ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span>Logging in...</span>
+              </>
+            ) : (
+              'Log In'
+            )}
           </button>
         </form>
 

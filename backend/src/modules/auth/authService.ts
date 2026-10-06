@@ -199,11 +199,11 @@ export const authService = {
   },
 
   // ---- Forgot password -------------------------------------------------
-  async forgotPassword(email: string): Promise<void> {
+  async forgotPassword(email: string): Promise<{ resetToken?: string; resetUrl?: string }> {
     const result = await query<any>(`SELECT id FROM users WHERE email = $1`, [email]);
     if (!result.rows.length) {
       // Don't reveal whether email exists
-      return;
+      return {};
     }
 
     const resetToken = crypto.randomBytes(32).toString('hex');
@@ -214,12 +214,17 @@ export const authService = {
       [resetToken, expires, result.rows[0].id]
     );
 
-    const resetUrl = `${config.server.frontendUrl}/reset-password?token=${resetToken}`;
-    await sendEmail(
-      email,
-      'Reset your FaceChat password',
-      `<p>Click <a href="${resetUrl}">here</a> to reset your password. This link expires in 1 hour.</p>`
-    );
+    const resetUrl = `${config.server.frontendUrl}/auth/reset-password?token=${resetToken}`;
+    if (config.email.user && config.email.pass) {
+      await sendEmail(
+        email,
+        'Reset your FaceChat password',
+        `<p>Click <a href="${resetUrl}">here</a> to reset your password. This link expires in 1 hour.</p>`
+      );
+    }
+
+    logger.info('Password reset token generated', { email });
+    return { resetToken, resetUrl };
   },
 
   // ---- Reset password --------------------------------------------------

@@ -32,4 +32,9 @@ services:
         value: production
       - key: PORT
         value: 3000
-
+      - key: BACKEND_URL
+        value: https://facechat-backend-5dbq.onrender.com
+      - key: NEXT_PUBLIC_API_URL
+        value: https://facechat-backend-5dbq.onrender.com
+      - key: NEXT_PUBLIC_WS_URL
+        value: https://facechat-backend-5dbq.onrender.com
