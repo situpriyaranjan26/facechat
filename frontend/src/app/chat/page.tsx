@@ -996,8 +996,8 @@ export default function ChatPage() {
               style={{ filter: bgStyles.pipFilter }}
               className="w-full h-full object-cover transition-all"
             />
-            {/* Snapchat AR Filters Overlay on local stream */}
-            <ARFilterOverlay filter={activeFilter} isMirrored={true} />
+            {/* Snapchat AR Filters Overlay on local stream with face tracking */}
+            <ARFilterOverlay filter={activeFilter} isMirrored={true} videoRef={localVideoRef} />
 
             <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur text-[10px] text-white font-medium flex items-center gap-1 z-30">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
