@@ -169,6 +169,34 @@ export default function ChatPage() {
   const socketRef = useRef<Socket | null>(null);
   const rtcRef = useRef<WebRTCManager | null>(null);
   const durationTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isSimulatedRef = useRef<boolean>(false);
+  const localStreamRef = useRef<MediaStream | null>(null);
+
+  // Sync active local stream in ref
+  useEffect(() => {
+    localStreamRef.current = localStream;
+    if (localVideoRef.current && localStream) {
+      if (localVideoRef.current.srcObject !== localStream) {
+        localVideoRef.current.srcObject = localStream;
+      }
+      localVideoRef.current.play().catch(console.warn);
+    }
+  }, [localStream]);
+
+  // Synchronize remote video element whenever remoteStream or callState updates to prevent black screens
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) {
+      if (remoteVideoRef.current.srcObject !== remoteStream) {
+        remoteVideoRef.current.srcObject = remoteStream;
+      }
+      const p = remoteVideoRef.current.play();
+      if (p !== undefined) {
+        p.catch((err) => {
+          console.warn('[Video] Auto-play prevented, waiting for user click:', err);
+        });
+      }
+    }
+  }, [remoteStream, callState]);
 
   useEffect(() => {
     // 18+ check
@@ -222,6 +250,7 @@ export default function ChatPage() {
     try {
       const stream = await requestMediaPermissions(true, true);
       setLocalStream(stream);
+      localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
@@ -237,9 +266,12 @@ export default function ChatPage() {
       rtcRef.current = rtc;
 
       rtc.setRemoteStreamCallback((rStream) => {
+        console.log('[WebRTC] Received remote stream with tracks:', rStream.getTracks().length);
         setRemoteStream(rStream);
+        setCallState('connected');
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = rStream;
+          remoteVideoRef.current.play().catch(console.warn);
         }
       });
 
@@ -291,6 +323,7 @@ export default function ChatPage() {
     socket.on('searching', () => {
       setCallState('searching');
       setRemoteStream(null);
+      isSimulatedRef.current = false;
       setIsWaitingPartner(false);
       setPartnerAccepted(false);
       setDuration(0);
@@ -312,13 +345,8 @@ export default function ChatPage() {
       setPartnerName(data.partnerName || 'Stranger');
       setIsWaitingPartner(false);
       setPartnerAccepted(false);
+      isSimulatedRef.current = !!data.isSimulated;
       setCallState('preview');
-
-      // For simulated preview, pre-set stream
-      if (data.isSimulated) {
-        const simStream = createSimulatedStrangerStream(data.partnerCountry || 'Global');
-        setRemoteStream(simStream);
-      }
     });
 
     // Waiting for partner confirmation
@@ -336,17 +364,27 @@ export default function ChatPage() {
       setIsWaitingPartner(false);
       setPartnerAccepted(false);
 
-      if (remoteStream && remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
-        remoteVideoRef.current.play().catch(console.warn);
+      if (isSimulatedRef.current) {
+        // Simulated stranger
+        const simStream = createSimulatedStrangerStream(partnerCountry || 'Global');
+        setRemoteStream(simStream);
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = simStream;
+          remoteVideoRef.current.play().catch(console.warn);
+        }
         setCallState('connected');
         startTimer();
         setShowChat(true);
         return;
       }
 
+      // REAL P2P WebRTC connection
+      setRemoteStream(null);
       await rtc.createPeerConnection();
-      rtc.addLocalStream(stream);
+      const activeStream = localStreamRef.current || stream;
+      if (activeStream) {
+        rtc.addLocalStream(activeStream);
+      }
 
       rtc.setOnIceCandidate((candidate) => {
         socket.emit('ice_candidate', { candidate });
@@ -364,9 +402,12 @@ export default function ChatPage() {
 
     socket.on('offer', async (data: { sdp: any }) => {
       try {
+        const activeStream = localStreamRef.current || stream;
         if (!rtc.isInitialized()) {
           await rtc.createPeerConnection();
-          rtc.addLocalStream(stream);
+          if (activeStream) {
+            rtc.addLocalStream(activeStream);
+          }
           rtc.setOnIceCandidate((candidate) => {
             socket.emit('ice_candidate', { candidate });
           });
@@ -404,6 +445,7 @@ export default function ChatPage() {
     socket.on('peer_disconnected', (data: { reason?: string; conversationId?: string }) => {
       setCallState('ended');
       setRemoteStream(null);
+      isSimulatedRef.current = false;
       if (durationTimerRef.current) clearInterval(durationTimerRef.current);
       toast('Stranger disconnected or passed.', { icon: '👋' });
 
@@ -417,6 +459,7 @@ export default function ChatPage() {
     socket.on('call_ended', (data: { reason?: string; conversationId?: string }) => {
       setCallState('ended');
       setRemoteStream(null);
+      isSimulatedRef.current = false;
       if (durationTimerRef.current) clearInterval(durationTimerRef.current);
 
       if (activeConversationId) {
@@ -542,6 +585,7 @@ export default function ChatPage() {
     }
     setCallState('searching');
     setRemoteStream(null);
+    isSimulatedRef.current = false;
     setChatMessages([]);
   };
 
@@ -551,6 +595,7 @@ export default function ChatPage() {
     }
     setCallState('idle');
     setRemoteStream(null);
+    isSimulatedRef.current = false;
     if (durationTimerRef.current) clearInterval(durationTimerRef.current);
     router.push('/');
   };
@@ -730,7 +775,7 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* Remote Video (Decoded in DOM with object-contain so COMPLETE FACE is visible) */}
+          {/* Remote Video (Always mounted; object-contain shows 100% of the face uncropped) */}
           <video
             ref={remoteVideoRef}
             autoPlay
@@ -911,10 +956,10 @@ export default function ChatPage() {
         onClose={() => setShowBackgroundSelector(false)}
       />
 
-      {/* Compulsory Photo Setup Modal */}
+      {/* Compulsory Photo Setup Modal (Passes localStream so live mirror video displays!) */}
       <CompulsoryPhotoModal
         isOpen={showPhotoModal}
-        localVideoRef={localVideoRef}
+        localStream={localStream}
         onPhotoSaved={handlePhotoSaved}
       />
 

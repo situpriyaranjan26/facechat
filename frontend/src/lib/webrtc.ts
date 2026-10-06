@@ -8,6 +8,22 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun3.l.google.com:19302' },
   { urls: 'stun:stun4.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
 ];
 
 export class WebRTCManager {
@@ -28,6 +44,8 @@ export class WebRTCManager {
     this.pc = new RTCPeerConnection({
       iceServers,
       iceCandidatePoolSize: 10,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require',
     });
 
     this.pc.onicecandidate = (event) => {
@@ -38,23 +56,16 @@ export class WebRTCManager {
 
     this.pc.ontrack = (event) => {
       console.log('[WebRTC] Received remote track:', event.track.kind, event.track.id);
-      
-      if (!this.remoteStream) {
-        this.remoteStream = new MediaStream();
-      }
 
-      // Add track to remote stream if not already present
-      if (!this.remoteStream.getTracks().some((t) => t.id === event.track.id)) {
-        this.remoteStream.addTrack(event.track);
-      }
-
-      // If streams were attached directly, also merge them
       if (event.streams && event.streams[0]) {
-        event.streams[0].getTracks().forEach((track) => {
-          if (this.remoteStream && !this.remoteStream.getTracks().some((t) => t.id === track.id)) {
-            this.remoteStream.addTrack(track);
-          }
-        });
+        this.remoteStream = event.streams[0];
+      } else {
+        if (!this.remoteStream) {
+          this.remoteStream = new MediaStream();
+        }
+        if (!this.remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+          this.remoteStream.addTrack(event.track);
+        }
       }
 
       if (this.onRemoteStream && this.remoteStream) {
@@ -80,7 +91,6 @@ export class WebRTCManager {
   addLocalStream(stream: MediaStream) {
     if (!this.pc) throw new Error('PeerConnection not initialized');
     stream.getTracks().forEach((track) => {
-      // Avoid duplicate tracks
       const senders = this.pc!.getSenders();
       const exists = senders.some((s) => s.track?.id === track.id);
       if (!exists) {
