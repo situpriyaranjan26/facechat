@@ -57,6 +57,10 @@ export const config = {
 
     // Face Token economy
     initialFaceTokens: parseInt(process.env.INITIAL_FACE_TOKENS || '10', 10),
+    initialRegisteredFaceTokens: parseInt(process.env.INITIAL_REGISTERED_FACE_TOKENS || '100', 10),
+    initialGuestFaceTokens: parseInt(process.env.INITIAL_GUEST_FACE_TOKENS || '10', 10),
+    testModeAutoRefillAmount: 10,
+    testModeEnabled: true,
     tokensSpentPerMinute: parseInt(process.env.TOKENS_SPENT_PER_MINUTE || '1', 10),
 
     // Skip penalty: < 2 minutes (120s) intentional skip deducts 2 Face Tokens

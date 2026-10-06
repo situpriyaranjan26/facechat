@@ -8,12 +8,16 @@ interface CompulsoryPhotoModalProps {
   isOpen: boolean;
   localStream: MediaStream | null;
   onPhotoSaved: (photoDataUrl: string) => void;
+  onClose?: () => void;
+  isExistingUser?: boolean;
 }
 
 export default function CompulsoryPhotoModal({
   isOpen,
   localStream,
   onPhotoSaved,
+  onClose,
+  isExistingUser = false,
 }: CompulsoryPhotoModalProps) {
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -116,6 +120,16 @@ export default function CompulsoryPhotoModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in">
       <div className="max-w-md w-full bg-[#111118] border border-[#2A2A3A] p-6 sm:p-8 rounded-3xl shadow-2xl text-center relative overflow-hidden">
+        {/* Close button for existing users */}
+        {isExistingUser && onClose && (
+          <button
+            onClick={onClose}
+            className="absolute top-4 right-4 p-2 text-zinc-400 hover:text-white rounded-full bg-zinc-800/80 hover:bg-zinc-700 transition"
+          >
+            ✕
+          </button>
+        )}
+
         {/* Shutter flash effect */}
         {isFlashing && (
           <div className="absolute inset-0 bg-white z-50 pointer-events-none transition-opacity duration-200" />
@@ -124,12 +138,16 @@ export default function CompulsoryPhotoModal({
         {/* Header Badge */}
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold mb-3">
           <AlertCircle className="w-3.5 h-3.5" />
-          <span>Step 1: Match Verification</span>
+          <span>{isExistingUser ? 'Update Snapshot' : 'Step 1: Match Verification'}</span>
         </div>
 
-        <h2 className="text-2xl font-black text-white mb-2">Attach Your Photo</h2>
+        <h2 className="text-2xl font-black text-white mb-2">
+          {isExistingUser ? 'Change Your Snapshot' : 'Attach Your Photo'}
+        </h2>
         <p className="text-xs text-[#8B8BA7] mb-5 leading-relaxed">
-          FaceChat requires a verified selfie before matching. Strangers will see this snapshot to accept (✓) or pass (✕) before video connects!
+          {isExistingUser
+            ? 'Snap a fresh photo to show strangers before they connect with you on video.'
+            : 'FaceChat requires a verified selfie before matching. Strangers will see this snapshot to accept (✓) or pass (✕) before video connects!'}
         </p>
 
         {/* Live Camera Preview / Captured Photo Frame */}

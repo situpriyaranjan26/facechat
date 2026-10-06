@@ -40,9 +40,9 @@ function mapTransaction(r: any): WalletTransaction {
 // Wallet & Face Tokens Ledger Service
 // -----------------------------------------------------------------------
 export const walletService = {
-  // ---- Create wallet (with INITIAL_FACE_TOKENS = 10) -------------------
+  // ---- Create wallet (with INITIAL_REGISTERED_FACE_TOKENS = 100) -------
   async createWallet(userId: string): Promise<Wallet> {
-    const initialTokens = config.business.initialFaceTokens || 10;
+    const initialTokens = config.business.initialRegisteredFaceTokens || 100;
     const result = await query<any>(
       `INSERT INTO wallets (user_id, balance, total_earned)
        VALUES ($1, $2, $2)
@@ -52,16 +52,16 @@ export const walletService = {
     );
 
     if (result.rows.length) {
-      // Record initial Face Tokens grant
+      // Record initial Face Tokens grant (100 Welcome Bonus)
       const idempotencyKey = `initial-grant:${userId}`;
       await query(
         `INSERT INTO wallet_transactions
            (user_id, amount, transaction_type, balance_after, description, idempotency_key)
-         VALUES ($1, $2, 'BONUS', $2, 'Initial Face Tokens Welcome Grant', $3)
+         VALUES ($1, $2, 'BONUS', $2, '100 Face Tokens Welcome Bonus', $3)
          ON CONFLICT (idempotency_key) DO NOTHING`,
         [userId, initialTokens, idempotencyKey]
       );
-      logger.info('Wallet created with initial Face Tokens', { userId, initialTokens });
+      logger.info('Wallet created with 100 welcome Face Tokens', { userId, initialTokens });
       return mapWallet(result.rows[0]);
     }
 
@@ -92,7 +92,20 @@ export const walletService = {
       const created = await this.createWallet(userId);
       return created.balance;
     }
-    return Number(result.rows[0].balance) || 0;
+    const balance = Number(result.rows[0].balance) || 0;
+    if (balance <= 0) {
+      // Test Mode Auto-refill: Automatically refill +10 tokens so testing is never blocked
+      const refillAmount = config.business.testModeAutoRefillAmount || 10;
+      await this.addTransaction(
+        userId,
+        refillAmount,
+        'BONUS',
+        '🧪 Test Mode Auto-Refill (+10 Tokens)',
+        `test-refill:${userId}:${Date.now()}`
+      );
+      return refillAmount;
+    }
+    return balance;
   },
 
   // ---- Add transaction (atomic ledger) ---------------------------------

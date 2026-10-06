@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Video, Globe, Shield, Sparkles, Zap, ArrowRight, Play } from 'lucide-react';
 import Navbar from '@/components/layout/Navbar';
 import Footer from '@/components/layout/Footer';
+import ActiveUsersShowcase from '@/app/components/ActiveUsersShowcase';
 
 export default function HomePage() {
   const router = useRouter();
@@ -62,7 +63,12 @@ export default function HomePage() {
           </p>
         </div>
 
-        <section className="z-10 mt-24 max-w-5xl mx-auto w-full px-4">
+        {/* Most Active Users & Direct Connect ($2/hr) */}
+        <div className="z-10 mt-16 max-w-6xl mx-auto w-full">
+          <ActiveUsersShowcase />
+        </div>
+
+        <section className="z-10 mt-20 max-w-5xl mx-auto w-full px-4">
           <h2 className="text-sm uppercase tracking-widest text-[#8B8BA7] font-bold mb-12">
             HOW IT WORKS
           </h2>

@@ -34,30 +34,50 @@ const socketBalanceMap = new Map<string, number>();
 
 // Helper to get balance for registered user, guest, or fallback socket session
 async function getUserOrGuestBalance(session: ClientSession): Promise<number> {
+  let bal = 0;
   if (session.userId) {
     try {
-      return await getBalance(session.userId);
+      bal = await getBalance(session.userId);
     } catch {
-      return 0;
+      bal = 0;
     }
-  }
-  if (session.guestToken) {
+  } else if (session.guestToken) {
     try {
       const b = await getGuestTokens(session.guestToken);
-      if (typeof b === 'number') return b;
+      if (typeof b === 'number') bal = b;
     } catch {
       // Fall through to in-memory fallback
     }
+  } else {
+    if (!socketBalanceMap.has(session.socketId)) {
+      socketBalanceMap.set(session.socketId, config.business.initialGuestFaceTokens || 10);
+    }
+    bal = socketBalanceMap.get(session.socketId) || 10;
   }
 
-  if (!socketBalanceMap.has(session.socketId)) {
-    socketBalanceMap.set(session.socketId, config.business.initialFaceTokens || 10);
+  // TEST MODE AUTO-REFILL: If balance is 0 or less, auto-refill +10 tokens
+  if (bal <= 0) {
+    bal = 10;
+    if (session.userId) {
+      walletService.addTransaction(
+        session.userId,
+        10,
+        'BONUS',
+        '🧪 Test Mode Auto-Refill (+10 Tokens)',
+        `test-refill:${session.userId}:${Date.now()}`
+      ).catch(() => {});
+    } else if (session.guestToken) {
+      updateGuestTokens(session.guestToken, 10).catch(() => {});
+    }
+    socketBalanceMap.set(session.socketId, 10);
   }
-  return socketBalanceMap.get(session.socketId) || 10;
+
+  return bal;
 }
 
 // Helper to adjust balance for either registered user or guest
 async function adjustUserOrGuestBalance(session: ClientSession, delta: number): Promise<number> {
+  let next = 0;
   if (session.userId) {
     try {
       if (delta > 0) {
@@ -77,26 +97,43 @@ async function adjustUserOrGuestBalance(session: ClientSession, delta: number): 
           `skip-penalty-${uuidv4()}`
         );
       }
-      return await getBalance(session.userId);
+      next = await getBalance(session.userId);
     } catch {
-      return 0;
+      next = 0;
     }
-  }
-
-  if (session.guestToken) {
+  } else if (session.guestToken) {
     try {
       const res = await updateGuestTokens(session.guestToken, delta);
       socketBalanceMap.set(session.socketId, res);
-      return res;
+      next = res;
     } catch {
       // Fallback
     }
+  } else {
+    // Socket ID fallback
+    const cur = socketBalanceMap.get(session.socketId) ?? (config.business.initialGuestFaceTokens || 10);
+    next = cur + delta;
   }
 
-  // Socket ID fallback
-  const cur = socketBalanceMap.get(session.socketId) ?? (config.business.initialFaceTokens || 10);
-  const next = Math.max(0, cur + delta);
-  socketBalanceMap.set(session.socketId, next);
+  // TEST MODE AUTO-REFILL: If balance reaches 0 or less, auto-refill +10 tokens
+  if (next <= 0) {
+    next = 10;
+    if (session.userId) {
+      walletService.addTransaction(
+        session.userId,
+        10,
+        'BONUS',
+        '🧪 Test Mode Auto-Refill (+10 Tokens)',
+        `test-refill:${session.userId}:${Date.now()}`
+      ).catch(() => {});
+    } else if (session.guestToken) {
+      updateGuestTokens(session.guestToken, 10).catch(() => {});
+    }
+    socketBalanceMap.set(session.socketId, 10);
+  } else {
+    socketBalanceMap.set(session.socketId, next);
+  }
+
   return next;
 }
 
@@ -250,6 +287,18 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
       }, 20000); // Check every 20s
     }
 
+    // Update snapshot / profile photo anytime
+    socket.on('update_photo', (data: { photo?: string }) => {
+      if (data?.photo) {
+        session.photo = data.photo;
+        logger.info('User updated snapshot photo', { socketId: socket.id });
+        const peerId = session.matchedPeerSocketId;
+        if (peerId && peerId !== 'simulated_stranger_bot') {
+          io.to(peerId).emit('partner_photo_updated', { photo: data.photo });
+        }
+      }
+    });
+
     // Join matchmaking queue with attached photo
     socket.on('join_queue', async (data: { preference?: 'anyone' | 'female' | 'male'; photo?: string }) => {
       session.preference = data?.preference || 'anyone';
@@ -257,14 +306,15 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
         session.photo = data.photo;
       }
 
-      // STRICT ZERO-TOKENS CHECK: Must have > 0 tokens to talk or queue
-      const currentBalance = await getUserOrGuestBalance(session);
+      // TEST MODE AUTO-REFILL: If balance <= 0, automatically refill +10 tokens
+      let currentBalance = await getUserOrGuestBalance(session);
       if (currentBalance <= 0) {
-        socket.emit('zero_coins', {
-          message: 'You have 0 Face Tokens! Refill tokens or wait for bonus to start talking.',
-          balance: 0,
+        currentBalance = await adjustUserOrGuestBalance(session, 10);
+        socket.emit('token_reward', {
+          amount: 10,
+          balance: currentBalance,
+          message: '🧪 Test Mode Auto-Refill: +10 Free Tokens Added!',
         });
-        return;
       }
 
       // Check FaceChat Preference Pass if preference is selected
@@ -321,7 +371,7 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
 
     // User rejects photo in match preview (Cross ✕) -> -2 Face Tokens penalty and skip
     socket.on('reject_match', async () => {
-      const newBalance = await adjustUserOrGuestBalance(session, -2);
+      let newBalance = await adjustUserOrGuestBalance(session, -2);
       socket.emit('token_penalty', {
         amount: 2,
         balance: newBalance,
@@ -338,12 +388,14 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
         }
       }
 
+      // If tokens hit 0 or below, auto-refill +10 in test mode so user can keep testing!
       if (newBalance <= 0) {
-        socket.emit('zero_coins', {
-          message: 'You have 0 Face Tokens! Refill tokens to continue meeting strangers.',
-          balance: 0,
+        newBalance = await adjustUserOrGuestBalance(session, 10);
+        socket.emit('token_reward', {
+          amount: 10,
+          balance: newBalance,
+          message: '🧪 Test Mode Auto-Refill: +10 Free Tokens Added!',
         });
-        return;
       }
 
       findAndConnectMatch(socket, session, io);
@@ -352,13 +404,14 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
     // Simulate stranger (instant preview mode)
     socket.on('simulate_stranger', async (data?: { photo?: string }) => {
       if (data?.photo) session.photo = data.photo;
-      const currentBal = await getUserOrGuestBalance(session);
+      let currentBal = await getUserOrGuestBalance(session);
       if (currentBal <= 0) {
-        socket.emit('zero_coins', {
-          message: 'You have 0 Face Tokens! Refill tokens to talk.',
-          balance: 0,
+        currentBal = await adjustUserOrGuestBalance(session, 10);
+        socket.emit('token_reward', {
+          amount: 10,
+          balance: currentBal,
+          message: '🧪 Test Mode Auto-Refill: +10 Free Tokens Added!',
         });
-        return;
       }
 
       await handleEndCall(socket, 'new_search');

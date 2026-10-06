@@ -39,6 +39,10 @@ import CoinDisplay from '@/components/ui/CoinDisplay';
 import CompulsoryPhotoModal from './components/CompulsoryPhotoModal';
 import MatchPreviewModal from './components/MatchPreviewModal';
 import BackgroundSelector, { BackgroundPreset } from './components/BackgroundSelector';
+import ARFilterOverlay, { ARFilterType } from './components/ARFilterOverlay';
+import ARFiltersDrawer from './components/ARFiltersDrawer';
+import RazorpayModal, { RazorpayItem } from '@/app/components/payments/RazorpayModal';
+import ActiveUsersShowcase from '@/app/components/ActiveUsersShowcase';
 
 type CallState = 'idle' | 'searching' | 'preview' | 'connecting' | 'connected' | 'ended';
 
@@ -162,6 +166,14 @@ export default function ChatPage() {
   // Feature: Video Background Effects
   const [showBackgroundSelector, setShowBackgroundSelector] = useState(false);
   const [backgroundPreset, setBackgroundPreset] = useState<BackgroundPreset>('none');
+
+  // Feature: Snapchat AR Filters
+  const [activeFilter, setActiveFilter] = useState<ARFilterType>('none');
+  const [showFilterDrawer, setShowFilterDrawer] = useState(false);
+
+  // Feature: Most Active Users Showcase & Razorpay Checkout
+  const [showActiveUsersModal, setShowActiveUsersModal] = useState(false);
+  const [razorpayItem, setRazorpayItem] = useState<RazorpayItem | null>(null);
 
   // Refs
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -304,9 +316,16 @@ export default function ChatPage() {
   const handlePhotoSaved = (photoUrl: string) => {
     setMyPhoto(photoUrl);
     setShowPhotoModal(false);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('facechat_user_photo', photoUrl);
+    }
+    toast.success('📸 Snapshot updated! Strangers will now see your new photo.');
     if (socketRef.current) {
-      socketRef.current.emit('join_queue', { preference: 'anyone', photo: photoUrl });
-      setCallState('searching');
+      socketRef.current.emit('update_photo', { photo: photoUrl });
+      if (callState === 'idle' || callState === 'ended') {
+        socketRef.current.emit('join_queue', { preference: 'anyone', photo: photoUrl });
+        setCallState('searching');
+      }
     }
   };
 
@@ -503,11 +522,21 @@ export default function ChatPage() {
       });
     });
 
+    socket.on('partner_photo_updated', (data: { photo?: string }) => {
+      if (data?.photo) {
+        setPartnerPhoto(data.photo);
+        toast('Partner updated their snapshot photo 📸', { icon: '📸' });
+      }
+    });
+
     socket.on('zero_coins', (data: { message: string; balance?: number }) => {
-      setBalance(0);
-      setCallState('ended');
-      setShowZeroModal(true);
-      toast.error(data.message || 'You need Face Tokens to talk! Refill at the wallet.');
+      // Test Mode Auto-refill active
+      const refilled = data.balance && data.balance > 0 ? data.balance : 10;
+      setBalance(refilled);
+      toast.success('🧪 Test Mode Auto-Refill: +10 Free Tokens Added!', {
+        icon: '🪙',
+        duration: 3500,
+      });
     });
 
     socket.on('guest_warning', (data: { secondsRemaining: number; message?: string }) => {
@@ -576,10 +605,6 @@ export default function ChatPage() {
   };
 
   const handleNext = () => {
-    if (balance <= 0) {
-      setShowZeroModal(true);
-      return;
-    }
     if (socketRef.current) {
       socketRef.current.emit('next');
     }
@@ -667,6 +692,41 @@ export default function ChatPage() {
           <div className="text-lg font-black tracking-wider">
             FACE<span className="bg-clip-text text-transparent bg-gradient-to-r from-[#7C3AED] to-[#EC4899]">CHAT</span>
           </div>
+
+          {/* User's Current Snapshot & Change Button */}
+          {myPhoto ? (
+            <button
+              onClick={() => setShowPhotoModal(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#1A1A26] hover:bg-[#2A2A3A] border border-[#2A2A3A] text-xs transition"
+              title="Click to Change Your Snapshot"
+            >
+              <img
+                src={myPhoto}
+                alt="You"
+                className="w-5 h-5 rounded-full object-cover border border-purple-400"
+              />
+              <span className="text-[11px] text-zinc-300 font-semibold hidden md:inline">Change Photo</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowPhotoModal(true)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-purple-600/30 hover:bg-purple-600/50 border border-purple-400 text-xs font-semibold text-purple-200"
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>Take Photo</span>
+            </button>
+          )}
+
+          {/* Active Stars Direct Connect ($2/hr) */}
+          <button
+            onClick={() => setShowActiveUsersModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-pink-500/20 to-purple-500/20 hover:from-pink-500/30 hover:to-purple-500/30 border border-pink-500/40 text-xs font-bold text-pink-300 transition shadow-sm"
+          >
+            <span>🔥</span>
+            <span className="hidden sm:inline">Active Stars</span>
+            <span className="text-[10px] bg-pink-500/30 px-1.5 py-0.5 rounded-full text-white">$2/hr</span>
+          </button>
+
           {partnerCountry && callState === 'connected' && (
             <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1A1A26] border border-[#2A2A3A] text-xs font-semibold text-white shadow-sm">
               <span className="text-sm">{getCountryFlag(partnerCountry)}</span>
@@ -681,7 +741,7 @@ export default function ChatPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           {callState === 'connected' && (
             <div className="flex items-center gap-2 px-3 py-1 bg-[#1A1A26] rounded-full text-xs font-mono font-bold text-emerald-400 border border-emerald-500/20">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -689,11 +749,29 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* Face Tokens Balance Display */}
-          <CoinDisplay
-            balance={balance}
-            onClick={() => router.push('/wallet')}
-          />
+          {/* Face Tokens Balance Display with Quick Razorpay Refill */}
+          <div className="flex items-center gap-1.5">
+            <CoinDisplay
+              balance={balance}
+              onClick={() => router.push('/wallet')}
+            />
+            <button
+              onClick={() =>
+                setRazorpayItem({
+                  type: 'token_bundle',
+                  id: 'standard',
+                  name: '1,000 Face Tokens Pack',
+                  amountINR: 99,
+                  amountUSD: 2,
+                  description: 'Instant refill with Razorpay test gateway',
+                })
+              }
+              className="px-2 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600/40 border border-blue-500/40 text-blue-300 text-[10px] font-bold transition hidden sm:inline-block"
+              title="Quick Refill via Razorpay"
+            >
+              ⚡ Refill
+            </button>
+          </div>
 
           <button
             onClick={() => setShowChat(!showChat)}
@@ -749,16 +827,49 @@ export default function ChatPage() {
               <h2 className="text-xl font-extrabold text-white mb-2">
                 Finding someone new...
               </h2>
-              <p className="text-xs text-[#8B8BA7] max-w-sm mb-6 leading-relaxed">
+              <p className="text-xs text-[#8B8BA7] max-w-sm mb-5 leading-relaxed">
                 Connecting you face-to-face with strangers around the world.
               </p>
-              <div className="flex items-center gap-2">
+
+              {/* Current Snapshot display with Change button */}
+              {myPhoto && (
+                <div className="mb-5 p-3 bg-[#111118]/90 backdrop-blur border border-[#2A2A3A] hover:border-purple-500/40 rounded-2xl flex items-center gap-3.5 max-w-sm w-full mx-auto shadow-xl transition">
+                  <img
+                    src={myPhoto}
+                    alt="Your Snapshot"
+                    className="w-12 h-12 rounded-xl object-cover border-2 border-purple-500 shadow-md"
+                  />
+                  <div className="text-left flex-1">
+                    <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <span>Your Match Snapshot</span>
+                      <span className="text-[10px] text-emerald-400 font-normal">● Live</span>
+                    </p>
+                    <p className="text-[10px] text-[#8B8BA7]">Seen by strangers before video starts</p>
+                  </div>
+                  <button
+                    onClick={() => setShowPhotoModal(true)}
+                    className="px-3 py-1.5 rounded-xl bg-purple-600/30 hover:bg-purple-600/50 border border-purple-500/40 text-xs font-bold text-purple-300 transition"
+                  >
+                    Change
+                  </button>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-center gap-2">
                 <button
                   onClick={() => socketRef.current?.emit('simulate_stranger', { photo: myPhoto })}
                   className="px-4 py-2 bg-[#1A1A26] border border-[#2A2A3A] text-xs font-semibold text-[#8B8BA7] hover:text-white rounded-xl transition flex items-center gap-1.5"
                 >
                   <Sparkles className="w-3.5 h-3.5 text-[#EC4899]" />
                   <span>Instant Match Preview</span>
+                </button>
+
+                <button
+                  onClick={() => setShowActiveUsersModal(true)}
+                  className="px-4 py-2 bg-gradient-to-r from-pink-500/20 to-purple-500/20 hover:from-pink-500/30 hover:to-purple-500/30 border border-pink-500/40 text-xs font-bold text-pink-300 rounded-xl transition flex items-center gap-1.5"
+                >
+                  <span>🔥</span>
+                  <span>Meet Active Stars ($2/hr)</span>
                 </button>
               </div>
             </div>
@@ -825,8 +936,8 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* Local PiP Video (With Background Styling applied) */}
-          <div className="absolute bottom-4 right-4 z-20 w-36 h-48 sm:w-44 sm:h-56 bg-[#111118] rounded-2xl overflow-hidden border-2 border-[#7C3AED]/50 shadow-2xl">
+          {/* Local PiP Video (With Background Styling applied & AR Filters Overlay) */}
+          <div className="absolute bottom-4 right-4 z-20 w-36 h-48 sm:w-44 sm:h-56 bg-[#111118] rounded-2xl overflow-hidden border-2 border-[#7C3AED]/50 shadow-2xl relative">
             <video
               ref={localVideoRef}
               autoPlay
@@ -835,10 +946,22 @@ export default function ChatPage() {
               style={{ filter: bgStyles.pipFilter }}
               className="w-full h-full object-cover transition-all"
             />
-            <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur text-[10px] text-white font-medium flex items-center gap-1">
+            {/* Snapchat AR Filters Overlay on local stream */}
+            <ARFilterOverlay filter={activeFilter} isMirrored={true} />
+
+            <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur text-[10px] text-white font-medium flex items-center gap-1 z-30">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
               You
             </div>
+
+            {/* Quick Change Snapshot button on PiP */}
+            <button
+              onClick={() => setShowPhotoModal(true)}
+              className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 hover:bg-black/90 backdrop-blur text-white text-[10px] transition z-30"
+              title="Change Snapshot"
+            >
+              <Camera className="w-3 h-3 text-[#06B6D4]" />
+            </button>
           </div>
         </div>
 
@@ -884,6 +1007,33 @@ export default function ChatPage() {
             title={isMuted ? 'Unmute' : 'Mute'}
           >
             {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+          </button>
+
+          {/* Snapchat AR Filters Button */}
+          <button
+            onClick={() => setShowFilterDrawer(!showFilterDrawer)}
+            className={`p-3.5 rounded-2xl border transition flex items-center gap-1.5 ${
+              showFilterDrawer || activeFilter !== 'none'
+                ? 'bg-gradient-to-r from-purple-600/30 to-pink-600/30 border-pink-500 text-pink-300 shadow-[0_0_15px_rgba(236,72,153,0.3)]'
+                : 'bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white hover:bg-[#2A2A3A]'
+            }`}
+            title="Snapchat AR Camera Filters"
+          >
+            <Sparkles className="w-5 h-5 text-pink-400" />
+            <span className="text-xs font-bold hidden sm:inline">Filters</span>
+            {activeFilter !== 'none' && (
+              <span className="w-2 h-2 rounded-full bg-pink-400 animate-pulse" />
+            )}
+          </button>
+
+          {/* Change Snapshot Button */}
+          <button
+            onClick={() => setShowPhotoModal(true)}
+            className="p-3.5 rounded-2xl border bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white hover:bg-[#2A2A3A] transition flex items-center gap-1.5"
+            title="Take / Change Snapshot"
+          >
+            <Camera className="w-5 h-5 text-[#06B6D4]" />
+            <span className="text-xs font-bold hidden sm:inline">Snapshot</span>
           </button>
 
           {/* Background Changer Button */}
@@ -948,6 +1098,14 @@ export default function ChatPage() {
         </div>
       </div>
 
+      {/* Snapchat AR Filters Drawer */}
+      <ARFiltersDrawer
+        isOpen={showFilterDrawer}
+        activeFilter={activeFilter}
+        onSelectFilter={(f) => setActiveFilter(f)}
+        onClose={() => setShowFilterDrawer(false)}
+      />
+
       {/* Background Selector Popover */}
       <BackgroundSelector
         isOpen={showBackgroundSelector}
@@ -956,12 +1114,45 @@ export default function ChatPage() {
         onClose={() => setShowBackgroundSelector(false)}
       />
 
-      {/* Compulsory Photo Setup Modal (Passes localStream so live mirror video displays!) */}
+      {/* Compulsory Photo Setup Modal */}
       <CompulsoryPhotoModal
         isOpen={showPhotoModal}
         localStream={localStream}
+        isExistingUser={!!myPhoto}
+        onClose={() => setShowPhotoModal(false)}
         onPhotoSaved={handlePhotoSaved}
       />
+
+      {/* Razorpay Payment Gateway Modal */}
+      <RazorpayModal
+        isOpen={!!razorpayItem}
+        item={razorpayItem}
+        onClose={() => setRazorpayItem(null)}
+        onSuccess={() => {
+          fetchBalance();
+        }}
+      />
+
+      {/* Active Users Showcase Direct Connect Modal ($2/hr) */}
+      {showActiveUsersModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-[#111118] border border-[#2A2A3A] rounded-3xl max-w-4xl w-full p-6 relative max-h-[90vh] overflow-y-auto shadow-2xl">
+            <button
+              onClick={() => setShowActiveUsersModal(false)}
+              className="absolute top-4 right-4 p-2 text-zinc-400 hover:text-white rounded-full bg-zinc-800/80 hover:bg-zinc-700 transition"
+            >
+              ✕
+            </button>
+            <ActiveUsersShowcase
+              compact={true}
+              onDirectConnectInitiated={(user) => {
+                setShowActiveUsersModal(false);
+                socketRef.current?.emit('simulate_stranger', { photo: myPhoto });
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Match Preview / Stranger Photo Approval Gate (Tick ✓ / Cross ✕) */}
       <MatchPreviewModal
@@ -1027,18 +1218,40 @@ export default function ChatPage() {
               </div>
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               <button
-                onClick={() => router.push('/wallet')}
-                className="w-full py-4 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-600 hover:from-amber-400 hover:to-yellow-500 text-black font-extrabold rounded-2xl transition shadow-[0_0_30px_rgba(245,158,11,0.5)] active:scale-95"
+                onClick={() => {
+                  setBalance(10);
+                  setShowZeroModal(false);
+                  toast.success('🧪 +10 Test Mode Face Tokens Auto-Refilled!', { icon: '🪙' });
+                }}
+                className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black font-extrabold rounded-2xl transition shadow-[0_0_20px_rgba(16,185,129,0.4)] active:scale-95 text-sm flex items-center justify-center gap-1.5"
               >
-                Refill Tokens Now (1,000 Tokens) ⚡
+                <span>🧪 Claim +10 Free Test Tokens</span>
               </button>
+
+              <button
+                onClick={() => {
+                  setShowZeroModal(false);
+                  setRazorpayItem({
+                    type: 'token_bundle',
+                    id: 'standard',
+                    name: '1,000 Face Tokens Pack',
+                    amountINR: 99,
+                    amountUSD: 2,
+                    description: 'Instant refill with Razorpay test gateway',
+                  });
+                }}
+                className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-extrabold rounded-2xl transition shadow-[0_0_20px_rgba(37,99,235,0.4)] active:scale-95 text-sm flex items-center justify-center gap-1.5"
+              >
+                <span>⚡ Pay ₹99 via Razorpay (1,000 Tokens)</span>
+              </button>
+
               <button
                 onClick={() => setShowZeroModal(false)}
-                className="w-full py-3 bg-[#1A1A26] hover:bg-[#252538] text-[#8B8BA7] hover:text-white font-bold rounded-2xl border border-[#2A2A3A] transition text-sm"
+                className="w-full py-2.5 bg-[#1A1A26] hover:bg-[#252538] text-[#8B8BA7] hover:text-white font-bold rounded-2xl border border-[#2A2A3A] transition text-xs"
               >
-                Close
+                Dismiss
               </button>
             </div>
           </div>

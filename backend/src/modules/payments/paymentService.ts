@@ -278,4 +278,68 @@ export const paymentService = {
       publishableKey: config.stripe.publishableKey,
     };
   },
+
+  // ---- Dummy Razorpay: Create Order ------------------------------------
+  async createRazorpayOrder(
+    userId: string,
+    itemType: 'token_bundle' | 'direct_connect' | 'preference_pass',
+    itemId: string,
+    amount: number,
+    currency: string = 'INR'
+  ) {
+    const orderId = `order_test_${uuidv4().replace(/-/g, '').slice(0, 14)}`;
+    logger.info('Created dummy Razorpay order', { userId, orderId, itemType, itemId, amount, currency });
+    return {
+      orderId,
+      amount: Math.round(amount * 100), // In paise (INR) or cents (USD)
+      currency,
+      keyId: 'rzp_test_facechat_dummy_key',
+    };
+  },
+
+  // ---- Dummy Razorpay: Verify Payment & Credit Account -----------------
+  async verifyRazorpayPayment(
+    userId: string,
+    orderId: string,
+    paymentId: string,
+    itemType: 'token_bundle' | 'direct_connect' | 'preference_pass',
+    itemId: string,
+    amountPaid: number
+  ) {
+    const idempotencyKey = `razorpay:${paymentId || orderId}`;
+    logger.info('Verifying dummy Razorpay payment', { userId, orderId, paymentId, itemType, itemId });
+
+    if (itemType === 'token_bundle') {
+      const bundle = (TOKEN_BUNDLES as any)[itemId] || TOKEN_BUNDLES.standard;
+      const tokens = bundle.tokens || 500;
+      await walletService.creditPurchasedTokens(
+        userId,
+        tokens,
+        `razorpay_${paymentId}`,
+        amountPaid || bundle.priceUsd
+      );
+      const newBal = await walletService.checkBalance(userId);
+      return {
+        success: true,
+        message: `Successfully credited ${tokens.toLocaleString()} Face Tokens via Razorpay!`,
+        balance: newBal,
+      };
+    } else if (itemType === 'direct_connect') {
+      return {
+        success: true,
+        message: 'Direct 1-Hour VIP Active User Connect unlocked via Razorpay!',
+      };
+    } else if (itemType === 'preference_pass') {
+      await preferenceService.grantPreferencePass(userId, 12);
+      return {
+        success: true,
+        message: 'FaceChat Preference Pass activated for 12 hours via Razorpay!',
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Razorpay payment processed successfully!',
+    };
+  },
 };

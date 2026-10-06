@@ -51,6 +51,43 @@ const handlePreferencePass = async (req: any, res: Response) => {
 router.post('/preference-pass', requireAuth as any, paymentLimiter, handlePreferencePass);
 router.post('/female-pass', requireAuth as any, paymentLimiter, handlePreferencePass);
 
+// POST /api/payments/razorpay/create-order – Dummy Razorpay order endpoint
+router.post('/razorpay/create-order', async (req: any, res: Response) => {
+  try {
+    const userId = req.user?.id || 'guest_user';
+    const { itemType, itemId, amount, currency } = req.body;
+    const order = await paymentService.createRazorpayOrder(
+      userId,
+      itemType || 'token_bundle',
+      itemId || 'standard',
+      amount || 99,
+      currency || 'INR'
+    );
+    res.json({ success: true, ...order });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/payments/razorpay/verify-payment – Dummy Razorpay verify endpoint
+router.post('/razorpay/verify-payment', async (req: any, res: Response) => {
+  try {
+    const userId = req.user?.id || (req.body.userId || 'guest_user');
+    const { orderId, paymentId, itemType, itemId, amount } = req.body;
+    const result = await paymentService.verifyRazorpayPayment(
+      userId,
+      orderId,
+      paymentId || `pay_test_${Date.now()}`,
+      itemType || 'token_bundle',
+      itemId || 'standard',
+      amount || 99
+    );
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/payments/webhook – raw body, NO auth (Stripe calls this)
 router.post('/webhook', async (req: Request, res: Response) => {
   const signature = req.headers['stripe-signature'] as string;
