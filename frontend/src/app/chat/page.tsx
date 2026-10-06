@@ -18,6 +18,7 @@ import {
   Maximize2,
   Minimize2,
   Palette,
+  Play,
 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { requestMediaPermissions, stopAllTracks } from '@/lib/mediaUtils';
@@ -162,6 +163,7 @@ export default function ChatPage() {
 
   // Feature: Video Display Fit Mode (Uncropped contain vs cover)
   const [videoFitMode, setVideoFitMode] = useState<'contain' | 'cover'>('contain');
+  const [isAutoplayBlocked, setIsAutoplayBlocked] = useState(false);
 
   // Feature: Video Background Effects
   const [showBackgroundSelector, setShowBackgroundSelector] = useState(false);
@@ -203,8 +205,11 @@ export default function ChatPage() {
       }
       const p = remoteVideoRef.current.play();
       if (p !== undefined) {
-        p.catch((err) => {
+        p.then(() => {
+          setIsAutoplayBlocked(false);
+        }).catch((err) => {
           console.warn('[Video] Auto-play prevented, waiting for user click:', err);
+          setIsAutoplayBlocked(true);
         });
       }
     }
@@ -283,7 +288,13 @@ export default function ChatPage() {
         setCallState('connected');
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = rStream;
-          remoteVideoRef.current.play().catch(console.warn);
+          const p = remoteVideoRef.current.play();
+          if (p !== undefined) {
+            p.then(() => setIsAutoplayBlocked(false)).catch((err) => {
+              console.warn('[Video] Auto-play prevented, waiting for user click:', err);
+              setIsAutoplayBlocked(true);
+            });
+          }
         }
       });
 
@@ -342,6 +353,7 @@ export default function ChatPage() {
     socket.on('searching', () => {
       setCallState('searching');
       setRemoteStream(null);
+      setIsAutoplayBlocked(false);
       isSimulatedRef.current = false;
       setIsWaitingPartner(false);
       setPartnerAccepted(false);
@@ -382,6 +394,7 @@ export default function ChatPage() {
       setCallState('connecting');
       setIsWaitingPartner(false);
       setPartnerAccepted(false);
+      setIsAutoplayBlocked(false);
 
       if (isSimulatedRef.current) {
         // Simulated stranger
@@ -409,6 +422,22 @@ export default function ChatPage() {
         socket.emit('ice_candidate', { candidate });
       });
 
+      rtc.setRemoteStreamCallback((rStream) => {
+        console.log('[WebRTC] Received remote stream with tracks:', rStream.getTracks().length);
+        setRemoteStream(rStream);
+        setCallState('connected');
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = rStream;
+          const p = remoteVideoRef.current.play();
+          if (p !== undefined) {
+            p.then(() => setIsAutoplayBlocked(false)).catch((err) => {
+              console.warn('[Video] Auto-play prevented, waiting for user click:', err);
+              setIsAutoplayBlocked(true);
+            });
+          }
+        }
+      });
+
       if (data.isInitiator) {
         try {
           const offer = await rtc.createOffer();
@@ -431,6 +460,22 @@ export default function ChatPage() {
             socket.emit('ice_candidate', { candidate });
           });
         }
+
+        rtc.setRemoteStreamCallback((rStream) => {
+          console.log('[WebRTC] Received remote stream with tracks:', rStream.getTracks().length);
+          setRemoteStream(rStream);
+          setCallState('connected');
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = rStream;
+            const p = remoteVideoRef.current.play();
+            if (p !== undefined) {
+              p.then(() => setIsAutoplayBlocked(false)).catch((err) => {
+                console.warn('[Video] Auto-play prevented, waiting for user click:', err);
+                setIsAutoplayBlocked(true);
+              });
+            }
+          }
+        });
 
         const answer = await rtc.handleOffer(data.sdp);
         socket.emit('answer', { sdp: answer });
@@ -602,6 +647,7 @@ export default function ChatPage() {
     }
     setCallState('searching');
     setRemoteStream(null);
+    setIsAutoplayBlocked(false);
   };
 
   const handleNext = () => {
@@ -610,6 +656,7 @@ export default function ChatPage() {
     }
     setCallState('searching');
     setRemoteStream(null);
+    setIsAutoplayBlocked(false);
     isSimulatedRef.current = false;
     setChatMessages([]);
   };
@@ -620,6 +667,7 @@ export default function ChatPage() {
     }
     setCallState('idle');
     setRemoteStream(null);
+    setIsAutoplayBlocked(false);
     isSimulatedRef.current = false;
     if (durationTimerRef.current) clearInterval(durationTimerRef.current);
     router.push('/');
@@ -685,11 +733,11 @@ export default function ChatPage() {
   const bgStyles = getBackgroundStyles();
 
   return (
-    <div className="h-screen w-screen bg-[#0A0A0F] text-[#F8F8FF] flex flex-col overflow-hidden font-sans select-none">
+    <div className="h-[100dvh] w-screen bg-[#0A0A0F] text-[#F8F8FF] flex flex-col overflow-hidden font-sans select-none">
       {/* Top Status Bar */}
-      <div className="h-14 bg-[#111118]/85 backdrop-blur border-b border-[#2A2A3A] px-4 flex items-center justify-between z-30">
-        <div className="flex items-center gap-3">
-          <div className="text-lg font-black tracking-wider">
+      <div className="h-14 bg-[#111118]/90 backdrop-blur border-b border-[#2A2A3A] px-2 sm:px-4 flex items-center justify-between z-30 overflow-x-auto no-scrollbar gap-2">
+        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+          <div className="text-base sm:text-lg font-black tracking-wider flex-shrink-0">
             FACE<span className="bg-clip-text text-transparent bg-gradient-to-r from-[#7C3AED] to-[#EC4899]">CHAT</span>
           </div>
 
@@ -697,7 +745,7 @@ export default function ChatPage() {
           {myPhoto ? (
             <button
               onClick={() => setShowPhotoModal(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#1A1A26] hover:bg-[#2A2A3A] border border-[#2A2A3A] text-xs transition"
+              className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-full bg-[#1A1A26] hover:bg-[#2A2A3A] border border-[#2A2A3A] text-xs transition flex-shrink-0"
               title="Click to Change Your Snapshot"
             >
               <img
@@ -705,12 +753,12 @@ export default function ChatPage() {
                 alt="You"
                 className="w-5 h-5 rounded-full object-cover border border-purple-400"
               />
-              <span className="text-[11px] text-zinc-300 font-semibold hidden md:inline">Change Photo</span>
+              <span className="text-[11px] text-zinc-300 font-semibold hidden sm:inline">Change Photo</span>
             </button>
           ) : (
             <button
               onClick={() => setShowPhotoModal(true)}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-purple-600/30 hover:bg-purple-600/50 border border-purple-400 text-xs font-semibold text-purple-200"
+              className="flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-full bg-purple-600/30 hover:bg-purple-600/50 border border-purple-400 text-xs font-semibold text-purple-200 flex-shrink-0"
             >
               <Camera className="w-3.5 h-3.5" />
               <span>Take Photo</span>
@@ -720,7 +768,7 @@ export default function ChatPage() {
           {/* Active Stars Direct Connect ($2/hr) */}
           <button
             onClick={() => setShowActiveUsersModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-pink-500/20 to-purple-500/20 hover:from-pink-500/30 hover:to-purple-500/30 border border-pink-500/40 text-xs font-bold text-pink-300 transition shadow-sm"
+            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 rounded-full bg-gradient-to-r from-pink-500/20 to-purple-500/20 hover:from-pink-500/30 hover:to-purple-500/30 border border-pink-500/40 text-xs font-bold text-pink-300 transition shadow-sm flex-shrink-0"
           >
             <span>🔥</span>
             <span className="hidden sm:inline">Active Stars</span>
@@ -728,29 +776,29 @@ export default function ChatPage() {
           </button>
 
           {partnerCountry && callState === 'connected' && (
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1A1A26] border border-[#2A2A3A] text-xs font-semibold text-white shadow-sm">
+            <div className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 rounded-full bg-[#1A1A26] border border-[#2A2A3A] text-xs font-semibold text-white shadow-sm flex-shrink-0">
               <span className="text-sm">{getCountryFlag(partnerCountry)}</span>
-              <span className="text-[#8B8BA7]">{partnerCountry}</span>
+              <span className="text-[#8B8BA7] text-[11px] sm:text-xs">{partnerCountry}</span>
             </div>
           )}
           {prefRemaining && (
-            <div className="hidden sm:flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#7C3AED]/20 border border-[#7C3AED]/40 text-xs font-bold text-purple-300">
+            <div className="hidden md:flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#7C3AED]/20 border border-[#7C3AED]/40 text-xs font-bold text-purple-300 flex-shrink-0">
               <Sparkles className="w-3 h-3 text-[#EC4899]" />
               <span>Preference: {prefRemaining}</span>
             </div>
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
           {callState === 'connected' && (
-            <div className="flex items-center gap-2 px-3 py-1 bg-[#1A1A26] rounded-full text-xs font-mono font-bold text-emerald-400 border border-emerald-500/20">
+            <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 bg-[#1A1A26] rounded-full text-xs font-mono font-bold text-emerald-400 border border-emerald-500/20 flex-shrink-0">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               {formatDuration(duration)}
             </div>
           )}
 
           {/* Face Tokens Balance Display with Quick Razorpay Refill */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
             <CoinDisplay
               balance={balance}
               onClick={() => router.push('/wallet')}
@@ -775,7 +823,7 @@ export default function ChatPage() {
 
           <button
             onClick={() => setShowChat(!showChat)}
-            className={`p-2 rounded-xl border transition relative ${
+            className={`p-1.5 sm:p-2 rounded-xl border transition relative flex-shrink-0 ${
               showChat
                 ? 'bg-[#7C3AED]/20 border-[#7C3AED] text-white'
                 : 'bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white'
@@ -808,12 +856,12 @@ export default function ChatPage() {
       )}
 
       {/* Main Video Viewport (Contained & Full Face Visible Layout) */}
-      <div className={`flex-1 relative flex items-center justify-center p-3 sm:p-6 overflow-hidden transition-all duration-500 ${bgStyles.ambientClass}`}>
+      <div className={`flex-1 relative flex items-center justify-center p-2 sm:p-6 overflow-hidden transition-all duration-500 ${bgStyles.ambientClass}`}>
         {/* Subtle Ambient Lighting Aura behind the video card */}
         <div className="absolute inset-0 opacity-20 pointer-events-none bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-[#7C3AED] via-transparent to-transparent blur-3xl" />
 
-        {/* Video Card Container - Bounded so full face is 100% visible on laptops */}
-        <div className="relative w-full max-w-4xl max-h-[72vh] aspect-[16/10] sm:aspect-video rounded-3xl overflow-hidden bg-[#0D0D14] border-2 border-[#2A2A3A] shadow-[0_15px_50px_rgba(0,0,0,0.8)] flex items-center justify-center">
+        {/* Video Card Container - Bounded so full face is 100% visible on laptops & mobile */}
+        <div className="relative w-full h-full sm:h-auto max-w-4xl sm:max-h-[72vh] sm:aspect-video rounded-2xl sm:rounded-3xl overflow-hidden bg-[#0D0D14] border border-[#2A2A3A] sm:border-2 shadow-[0_15px_50px_rgba(0,0,0,0.8)] flex items-center justify-center">
           
           {/* Searching State Overlay */}
           {callState === 'searching' && (
@@ -891,12 +939,34 @@ export default function ChatPage() {
             ref={remoteVideoRef}
             autoPlay
             playsInline
+            onPlaying={() => setIsAutoplayBlocked(false)}
             className={`w-full h-full ${
               videoFitMode === 'contain' ? 'object-contain' : 'object-cover'
             } transition-opacity duration-300 ${
               callState === 'connected' ? 'opacity-100' : 'opacity-0 pointer-events-none'
             }`}
           />
+
+          {/* Autoplay blocked overlay for mobile browsers */}
+          {isAutoplayBlocked && callState === 'connected' && (
+            <button
+              onClick={() => {
+                if (remoteVideoRef.current) {
+                  remoteVideoRef.current
+                    .play()
+                    .then(() => setIsAutoplayBlocked(false))
+                    .catch(console.warn);
+                }
+              }}
+              className="absolute inset-0 z-30 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center p-4 cursor-pointer text-center group"
+            >
+              <div className="w-16 h-16 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 flex items-center justify-center text-white shadow-xl group-hover:scale-110 transition-transform mb-3 animate-pulse">
+                <Play className="w-8 h-8 fill-white ml-1" />
+              </div>
+              <span className="text-white font-bold text-sm sm:text-base">Tap to Start Video & Audio</span>
+              <span className="text-zinc-400 text-xs mt-1">Mobile browser requires a tap to enable live stream</span>
+            </button>
+          )}
 
           {/* View Mode Toggle Button (Contain/Fit vs Fill) */}
           {callState === 'connected' && (
@@ -937,7 +1007,7 @@ export default function ChatPage() {
           )}
 
           {/* Local PiP Video (With Background Styling applied & AR Filters Overlay) */}
-          <div className="absolute bottom-4 right-4 z-20 w-36 h-48 sm:w-44 sm:h-56 bg-[#111118] rounded-2xl overflow-hidden border-2 border-[#7C3AED]/50 shadow-2xl relative">
+          <div className="absolute bottom-3 right-3 sm:bottom-4 sm:right-4 z-20 w-28 h-36 sm:w-44 sm:h-56 bg-[#111118] rounded-xl sm:rounded-2xl overflow-hidden border-2 border-[#7C3AED]/50 shadow-2xl">
             <video
               ref={localVideoRef}
               autoPlay
@@ -975,51 +1045,51 @@ export default function ChatPage() {
       </div>
 
       {/* Bottom Controls Bar */}
-      <div className="h-20 bg-[#111118] border-t border-[#2A2A3A] px-4 flex items-center justify-between z-30">
+      <div className="h-16 sm:h-20 bg-[#111118] border-t border-[#2A2A3A] px-2 sm:px-4 flex items-center justify-between z-30 overflow-x-auto no-scrollbar gap-1.5 sm:gap-3">
         {/* Left Safety Controls */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
           <button
             onClick={() => setShowReport(true)}
-            className="p-3 bg-[#1A1A26] border border-[#2A2A3A] text-[#8B8BA7] hover:text-red-400 rounded-2xl transition"
+            className="p-2.5 sm:p-3 bg-[#1A1A26] border border-[#2A2A3A] text-[#8B8BA7] hover:text-red-400 rounded-xl sm:rounded-2xl transition flex-shrink-0"
             title="Report Stranger"
           >
-            <Flag className="w-5 h-5" />
+            <Flag className="w-4 h-4 sm:w-5 sm:h-5" />
           </button>
           <button
             onClick={() => setShowBlock(true)}
-            className="p-3 bg-[#1A1A26] border border-[#2A2A3A] text-[#8B8BA7] hover:text-red-400 rounded-2xl transition"
+            className="p-2.5 sm:p-3 bg-[#1A1A26] border border-[#2A2A3A] text-[#8B8BA7] hover:text-red-400 rounded-xl sm:rounded-2xl transition flex-shrink-0"
             title="Block User"
           >
-            <Ban className="w-5 h-5" />
+            <Ban className="w-4 h-4 sm:w-5 sm:h-5" />
           </button>
         </div>
 
         {/* Center Primary Action Controls */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-3 flex-shrink-0">
           {/* Microphone toggle */}
           <button
             onClick={toggleMic}
-            className={`p-3.5 rounded-2xl border transition ${
+            className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border transition flex-shrink-0 ${
               isMuted
                 ? 'bg-red-500/20 border-red-500 text-red-400'
                 : 'bg-[#1A1A26] border-[#2A2A3A] text-white hover:bg-[#2A2A3A]'
             }`}
             title={isMuted ? 'Unmute' : 'Mute'}
           >
-            {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+            {isMuted ? <MicOff className="w-4 h-4 sm:w-5 sm:h-5" /> : <Mic className="w-4 h-4 sm:w-5 sm:h-5" />}
           </button>
 
           {/* Snapchat AR Filters Button */}
           <button
             onClick={() => setShowFilterDrawer(!showFilterDrawer)}
-            className={`p-3.5 rounded-2xl border transition flex items-center gap-1.5 ${
+            className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border transition flex items-center gap-1.5 flex-shrink-0 ${
               showFilterDrawer || activeFilter !== 'none'
                 ? 'bg-gradient-to-r from-purple-600/30 to-pink-600/30 border-pink-500 text-pink-300 shadow-[0_0_15px_rgba(236,72,153,0.3)]'
                 : 'bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white hover:bg-[#2A2A3A]'
             }`}
             title="Snapchat AR Camera Filters"
           >
-            <Sparkles className="w-5 h-5 text-pink-400" />
+            <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-pink-400" />
             <span className="text-xs font-bold hidden sm:inline">Filters</span>
             {activeFilter !== 'none' && (
               <span className="w-2 h-2 rounded-full bg-pink-400 animate-pulse" />
@@ -1029,38 +1099,38 @@ export default function ChatPage() {
           {/* Change Snapshot Button */}
           <button
             onClick={() => setShowPhotoModal(true)}
-            className="p-3.5 rounded-2xl border bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white hover:bg-[#2A2A3A] transition flex items-center gap-1.5"
+            className="p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white hover:bg-[#2A2A3A] transition flex items-center gap-1.5 flex-shrink-0"
             title="Take / Change Snapshot"
           >
-            <Camera className="w-5 h-5 text-[#06B6D4]" />
+            <Camera className="w-4 h-4 sm:w-5 sm:h-5 text-[#06B6D4]" />
             <span className="text-xs font-bold hidden sm:inline">Snapshot</span>
           </button>
 
           {/* Background Changer Button */}
           <button
             onClick={() => setShowBackgroundSelector(!showBackgroundSelector)}
-            className={`p-3.5 rounded-2xl border transition flex items-center gap-1.5 ${
+            className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border transition flex items-center gap-1.5 flex-shrink-0 ${
               showBackgroundSelector || backgroundPreset !== 'none'
                 ? 'bg-[#7C3AED]/20 border-[#7C3AED] text-purple-300'
                 : 'bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white hover:bg-[#2A2A3A]'
             }`}
             title="Change Video Background"
           >
-            <Palette className="w-5 h-5" />
+            <Palette className="w-4 h-4 sm:w-5 sm:h-5" />
             <span className="text-xs font-bold hidden sm:inline">Background</span>
           </button>
 
           {/* Chat toggle button */}
           <button
             onClick={() => setShowChat(!showChat)}
-            className={`p-3.5 rounded-2xl border transition relative flex items-center gap-1.5 ${
+            className={`p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border transition relative flex items-center gap-1.5 flex-shrink-0 ${
               showChat
                 ? 'bg-[#7C3AED] border-[#7C3AED] text-white shadow-[0_0_15px_rgba(124,58,237,0.5)]'
                 : 'bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white hover:bg-[#2A2A3A]'
             }`}
             title="Toggle Text Chat"
           >
-            <MessageSquare className="w-5 h-5" />
+            <MessageSquare className="w-4 h-4 sm:w-5 sm:h-5" />
             <span className="text-xs font-bold hidden sm:inline">Chat</span>
             {chatMessages.length > 0 && !showChat && (
               <span className="absolute -top-1 -right-1 w-3 h-3 bg-[#EC4899] rounded-full animate-ping" />
@@ -1070,30 +1140,30 @@ export default function ChatPage() {
           {/* Prominent NEXT Button */}
           <button
             onClick={handleNext}
-            className="px-6 py-3.5 bg-gradient-to-r from-[#7C3AED] to-[#EC4899] text-white font-extrabold rounded-2xl flex items-center gap-2 shadow-[0_0_20px_rgba(124,58,237,0.5)] hover:shadow-[0_0_30px_rgba(236,72,153,0.7)] active:scale-95 transition"
+            className="px-4 py-2.5 sm:px-6 sm:py-3.5 bg-gradient-to-r from-[#7C3AED] to-[#EC4899] text-white font-extrabold rounded-xl sm:rounded-2xl flex items-center gap-1.5 sm:gap-2 shadow-[0_0_20px_rgba(124,58,237,0.5)] hover:shadow-[0_0_30px_rgba(236,72,153,0.7)] active:scale-95 transition flex-shrink-0 text-xs sm:text-base"
           >
             <span>NEXT</span>
-            <SkipForward className="w-5 h-5 fill-white" />
+            <SkipForward className="w-4 h-4 sm:w-5 sm:h-5 fill-white" />
           </button>
 
           {/* End Call */}
           <button
             onClick={handleEndCall}
-            className="p-3.5 bg-red-600/20 border border-red-600/40 text-red-400 hover:bg-red-600 hover:text-white rounded-2xl transition"
+            className="p-2.5 sm:p-3.5 bg-red-600/20 border border-red-600/40 text-red-400 hover:bg-red-600 hover:text-white rounded-xl sm:rounded-2xl transition flex-shrink-0"
             title="End Call"
           >
-            <PhoneOff className="w-5 h-5" />
+            <PhoneOff className="w-4 h-4 sm:w-5 sm:h-5" />
           </button>
         </div>
 
         {/* Right Star Rating quick button */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <button
             onClick={() => setShowRating(true)}
-            className="p-3 bg-[#1A1A26] border border-[#2A2A3A] text-amber-400 hover:bg-[#2A2A3A] rounded-2xl transition"
+            className="p-2.5 sm:p-3 bg-[#1A1A26] border border-[#2A2A3A] text-amber-400 hover:bg-[#2A2A3A] rounded-xl sm:rounded-2xl transition flex-shrink-0"
             title="Rate Conversation"
           >
-            <Star className="w-5 h-5 fill-amber-400/20" />
+            <Star className="w-4 h-4 sm:w-5 sm:h-5 fill-amber-400/20" />
           </button>
         </div>
       </div>

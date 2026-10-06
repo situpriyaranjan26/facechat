@@ -31,6 +31,7 @@ const activeSockets = new Map<string, ClientSession>();
 const waitingQueue: ClientSession[] = [];
 // In-memory socket fallback balance map to guarantee tokens never get lost
 const socketBalanceMap = new Map<string, number>();
+let ioInstance: SocketIOServer | null = null;
 
 // Helper to get balance for registered user, guest, or fallback socket session
 async function getUserOrGuestBalance(session: ClientSession): Promise<number> {
@@ -181,6 +182,7 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
     },
     transports: ['websocket', 'polling'],
   });
+  ioInstance = io;
 
   io.use(async (socket: Socket, next) => {
     try {
@@ -607,7 +609,11 @@ async function handleEndCall(socket: Socket, reason: string) {
       peerSession.activeConversationId = undefined;
       peerSession.acceptedMatch = false;
     }
-    socket.to(peerId).emit('peer_disconnected', { reason, conversationId: convId });
+    if (ioInstance) {
+      ioInstance.to(peerId).emit('peer_disconnected', { reason, conversationId: convId });
+    } else {
+      socket.to(peerId).emit('peer_disconnected', { reason, conversationId: convId });
+    }
   }
 
   socket.emit('call_ended', { reason, conversationId: convId });

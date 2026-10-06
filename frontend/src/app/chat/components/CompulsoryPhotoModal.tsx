@@ -22,8 +22,18 @@ export default function CompulsoryPhotoModal({
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [isFlashing, setIsFlashing] = useState(false);
+  const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Clean up any running countdown on unmount or close
+  useEffect(() => {
+    return () => {
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+      }
+    };
+  }, []);
 
   // Attach live camera stream to the preview mirror whenever modal is open and no photo is frozen
   useEffect(() => {
@@ -44,15 +54,22 @@ export default function CompulsoryPhotoModal({
       return;
     }
 
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+    }
+
     setCountdown(3);
     let current = 3;
 
-    const timer = setInterval(() => {
+    countdownTimerRef.current = setInterval(() => {
       current -= 1;
       if (current > 0) {
         setCountdown(current);
       } else {
-        clearInterval(timer);
+        if (countdownTimerRef.current) {
+          clearInterval(countdownTimerRef.current);
+          countdownTimerRef.current = null;
+        }
         setCountdown(null);
 
         // Flash effect
@@ -101,6 +118,10 @@ export default function CompulsoryPhotoModal({
   };
 
   const handleRetake = () => {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
     setPreviewPhoto(null);
     setCountdown(null);
   };

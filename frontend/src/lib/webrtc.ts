@@ -1,21 +1,12 @@
 type RemoteStreamCallback = (stream: MediaStream) => void;
 type IceCandidateCallback = (candidate: RTCIceCandidate) => void;
 
+// Fast, reliable STUN + TURN servers without candidate flooding
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
-  { urls: 'stun:global.stun.twilio.com:3478' },
   {
     urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443',
     username: 'openrelayproject',
     credential: 'openrelayproject',
   },
@@ -34,16 +25,16 @@ export class WebRTCManager {
   private candidateQueue: RTCIceCandidateInit[] = [];
 
   async createPeerConnection(iceServers: RTCIceServer[] = DEFAULT_ICE_SERVERS): Promise<RTCPeerConnection> {
+    // If an existing connection is present, close the native peer connection but preserve registered callbacks!
     if (this.pc) {
-      this.close();
+      this.close(false);
     }
 
     this.remoteStream = new MediaStream();
-    this.candidateQueue = [];
 
     this.pc = new RTCPeerConnection({
       iceServers,
-      iceCandidatePoolSize: 10,
+      iceCandidatePoolSize: 0, // Prevent candidate flooding to eliminate CPU and network lag
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
     });
@@ -57,19 +48,27 @@ export class WebRTCManager {
     this.pc.ontrack = (event) => {
       console.log('[WebRTC] Received remote track:', event.track.kind, event.track.id);
 
+      if (!this.remoteStream) {
+        this.remoteStream = new MediaStream();
+      }
+
       if (event.streams && event.streams[0]) {
-        this.remoteStream = event.streams[0];
+        event.streams[0].getTracks().forEach((track) => {
+          if (!this.remoteStream!.getTracks().some((t) => t.id === track.id)) {
+            this.remoteStream!.addTrack(track);
+          }
+        });
       } else {
-        if (!this.remoteStream) {
-          this.remoteStream = new MediaStream();
-        }
         if (!this.remoteStream.getTracks().some((t) => t.id === event.track.id)) {
           this.remoteStream.addTrack(event.track);
         }
       }
 
+      // Always pass a fresh MediaStream clone containing current active tracks
+      // so React state update detects new track arrivals and forces video re-binding!
       if (this.onRemoteStream && this.remoteStream) {
-        this.onRemoteStream(this.remoteStream);
+        const freshStream = new MediaStream(this.remoteStream.getTracks());
+        this.onRemoteStream(freshStream);
       }
     };
 
@@ -85,7 +84,7 @@ export class WebRTCManager {
   }
 
   isInitialized(): boolean {
-    return this.pc !== null;
+    return this.pc !== null && this.pc.signalingState !== 'closed';
   }
 
   addLocalStream(stream: MediaStream) {
@@ -94,7 +93,20 @@ export class WebRTCManager {
       const senders = this.pc!.getSenders();
       const exists = senders.some((s) => s.track?.id === track.id);
       if (!exists) {
-        this.pc!.addTrack(track, stream);
+        const sender = this.pc!.addTrack(track, stream);
+        // Optimize video encoding parameters to prevent lag and frame drops
+        if (track.kind === 'video') {
+          try {
+            const params = sender.getParameters();
+            if (!params.encodings || params.encodings.length === 0) {
+              params.encodings = [{}];
+            }
+            params.encodings[0].maxBitrate = 900000; // 900 kbps (clean HD with zero stutter)
+            sender.setParameters(params).catch(() => {});
+          } catch {
+            // Parameter tuning is optional
+          }
+        }
       }
     });
   }
@@ -142,18 +154,18 @@ export class WebRTCManager {
     try {
       await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (err) {
-      console.error('[WebRTC] Failed to add ICE candidate:', err);
+      console.warn('[WebRTC] Handled non-fatal ICE candidate warning:', err);
     }
   }
 
   private async drainCandidateQueue() {
     while (this.candidateQueue.length > 0) {
       const candidate = this.candidateQueue.shift();
-      if (candidate && this.pc) {
+      if (candidate && this.pc && this.pc.remoteDescription) {
         try {
           await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (err) {
-          console.warn('[WebRTC] Error draining queued candidate:', err);
+          console.warn('[WebRTC] Candidate drain non-fatal warning:', err);
         }
       }
     }
@@ -175,19 +187,25 @@ export class WebRTCManager {
     return this.pc?.connectionState ?? null;
   }
 
-  close() {
+  close(clearCallbacks: boolean = false) {
     if (this.pc) {
-      this.pc.onicecandidate = null;
-      this.pc.ontrack = null;
-      this.pc.onconnectionstatechange = null;
-      this.pc.oniceconnectionstatechange = null;
-      this.pc.close();
+      try {
+        this.pc.onicecandidate = null;
+        this.pc.ontrack = null;
+        this.pc.onconnectionstatechange = null;
+        this.pc.oniceconnectionstatechange = null;
+        this.pc.close();
+      } catch (e) {
+        console.warn('[WebRTC] Peer connection close warning:', e);
+      }
       this.pc = null;
     }
     this.remoteStream = null;
-    this.candidateQueue = [];
-    this.onRemoteStream = null;
-    this.onIceCandidate = null;
+    if (clearCallbacks) {
+      this.candidateQueue = [];
+      this.onRemoteStream = null;
+      this.onIceCandidate = null;
+    }
   }
 }
 
