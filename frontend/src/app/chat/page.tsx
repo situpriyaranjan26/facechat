@@ -15,6 +15,9 @@ import {
   Sparkles,
   Camera,
   Star,
+  Maximize2,
+  Minimize2,
+  Palette,
 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { requestMediaPermissions, stopAllTracks } from '@/lib/mediaUtils';
@@ -22,6 +25,7 @@ import { WebRTCManager } from '@/lib/webrtc';
 import { useAuthStore } from '@/store/authStore';
 import { useWalletStore } from '@/store/walletStore';
 import api from '@/lib/api';
+import { getWsUrl } from '@/lib/socket';
 import { getCountryFlag } from '@/lib/geoUtils';
 import toast from 'react-hot-toast';
 
@@ -32,8 +36,11 @@ import GuestExpiredModal from './components/GuestExpiredModal';
 import RatingModal from './components/RatingModal';
 import TextChat from './components/TextChat';
 import CoinDisplay from '@/components/ui/CoinDisplay';
+import CompulsoryPhotoModal from './components/CompulsoryPhotoModal';
+import MatchPreviewModal from './components/MatchPreviewModal';
+import BackgroundSelector, { BackgroundPreset } from './components/BackgroundSelector';
 
-type CallState = 'idle' | 'searching' | 'connecting' | 'connected' | 'ended';
+type CallState = 'idle' | 'searching' | 'preview' | 'connecting' | 'connected' | 'ended';
 
 function createSimulatedStrangerStream(country: string): MediaStream {
   if (typeof document === 'undefined') return new MediaStream();
@@ -98,8 +105,8 @@ function createSimulatedStrangerStream(country: string): MediaStream {
     ctx.fillText(`Stranger from ${country}`, 320, 360);
 
     ctx.fillStyle = '#10B981';
-    ctx.font = '14px system-ui, sans-serif';
-    ctx.fillText('● Live Video Connected • Say Hello Below!', 320, 395);
+    ctx.font = 'bold 14px system-ui, sans-serif';
+    ctx.fillText('LIVE VIDEO CONNECTED', 320, 395);
 
     requestAnimationFrame(draw);
   };
@@ -110,7 +117,7 @@ function createSimulatedStrangerStream(country: string): MediaStream {
 
 export default function ChatPage() {
   const router = useRouter();
-  const { user, isAuthenticated, isGuest, guestToken, guestTimeRemaining, guestWarning } = useAuthStore();
+  const { user, isAuthenticated, isGuest, guestToken, setGuestToken } = useAuthStore();
   const { balance, setBalance, fetchBalance } = useWalletStore();
 
   const [callState, setCallState] = useState<CallState>('idle');
@@ -141,6 +148,21 @@ export default function ChatPage() {
   const [chatMessages, setChatMessages] = useState<Array<{ text: string; sender: 'me' | 'peer'; timestamp: number }>>([]);
   const [showGuestExpired, setShowGuestExpired] = useState(false);
 
+  // Feature: Compulsory Photo Verification & Match Gate
+  const [myPhoto, setMyPhoto] = useState<string | null>(null);
+  const [showPhotoModal, setShowPhotoModal] = useState(false);
+  const [partnerPhoto, setPartnerPhoto] = useState<string | null>(null);
+  const [partnerName, setPartnerName] = useState('Stranger');
+  const [isWaitingPartner, setIsWaitingPartner] = useState(false);
+  const [partnerAccepted, setPartnerAccepted] = useState(false);
+
+  // Feature: Video Display Fit Mode (Uncropped contain vs cover)
+  const [videoFitMode, setVideoFitMode] = useState<'contain' | 'cover'>('contain');
+
+  // Feature: Video Background Effects
+  const [showBackgroundSelector, setShowBackgroundSelector] = useState(false);
+  const [backgroundPreset, setBackgroundPreset] = useState<BackgroundPreset>('none');
+
   // Refs
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -155,6 +177,11 @@ export default function ChatPage() {
       if (isConfirmed !== 'true') {
         router.push('/age-gate');
         return;
+      }
+      // Check stored photo
+      const savedPhoto = localStorage.getItem('facechat_user_photo');
+      if (savedPhoto) {
+        setMyPhoto(savedPhoto);
       }
     }
 
@@ -193,11 +220,16 @@ export default function ChatPage() {
 
   const initMediaAndSocket = async () => {
     try {
-      // Video camera is ALWAYS ON (mandatory live video per policy)
       const stream = await requestMediaPermissions(true, true);
       setLocalStream(stream);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
+      }
+
+      // Check if photo is attached; if not, prompt immediately
+      const savedPhoto = typeof window !== 'undefined' ? localStorage.getItem('facechat_user_photo') : null;
+      if (!savedPhoto) {
+        setShowPhotoModal(true);
       }
 
       // Initialize WebRTC
@@ -211,11 +243,14 @@ export default function ChatPage() {
         }
       });
 
-      // Connect Socket
-      const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:4000';
-      const socket = io(wsUrl, {
+      // Connect Socket with resilient authentication
+      const storedGuestToken = typeof window !== 'undefined' ? localStorage.getItem('guest_token') || undefined : undefined;
+      const storedAuthToken = typeof window !== 'undefined' ? localStorage.getItem('facechat_token') || undefined : undefined;
+
+      const socket = io(getWsUrl(), {
         auth: {
-          guestToken: guestToken || undefined,
+          token: storedAuthToken,
+          guestToken: guestToken || storedGuestToken,
         },
         withCredentials: true,
       });
@@ -223,43 +258,92 @@ export default function ChatPage() {
 
       setupSocketListeners(socket, rtc, stream);
 
-      // Auto join queue
-      socket.emit('join_queue', { preference: 'anyone' });
-      setCallState('searching');
+      // If photo exists, auto join queue
+      if (savedPhoto) {
+        socket.emit('join_queue', { preference: 'anyone', photo: savedPhoto });
+        setCallState('searching');
+      }
     } catch (err: any) {
       console.error('Initialization error', err);
       toast.error('Could not access camera or connect to server.');
     }
   };
 
+  const handlePhotoSaved = (photoUrl: string) => {
+    setMyPhoto(photoUrl);
+    setShowPhotoModal(false);
+    if (socketRef.current) {
+      socketRef.current.emit('join_queue', { preference: 'anyone', photo: photoUrl });
+      setCallState('searching');
+    }
+  };
+
   const setupSocketListeners = (socket: Socket, rtc: WebRTCManager, stream: MediaStream) => {
+    socket.on('assigned_guest_token', (data: { guestToken: string }) => {
+      if (data?.guestToken) {
+        setGuestToken(data.guestToken);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('guest_token', data.guestToken);
+        }
+      }
+    });
+
     socket.on('searching', () => {
       setCallState('searching');
       setRemoteStream(null);
+      setIsWaitingPartner(false);
+      setPartnerAccepted(false);
       setDuration(0);
       if (durationTimerRef.current) clearInterval(durationTimerRef.current);
     });
 
-    socket.on('matched', async (data: { conversationId: string; isInitiator: boolean; partnerCountry: string; partnerId?: string; isSimulated?: boolean }) => {
+    // Match preview event: stranger photo decision gate (Tick ✓ or Cross ✕)
+    socket.on('match_preview', (data: {
+      conversationId: string;
+      isInitiator: boolean;
+      partnerCountry: string;
+      partnerPhoto: string | null;
+      partnerName: string;
+      isSimulated?: boolean;
+    }) => {
       setActiveConversationId(data.conversationId);
       setPartnerCountry(data.partnerCountry || 'Global');
-      setPartnerId(data.partnerId || null);
+      setPartnerPhoto(data.partnerPhoto || null);
+      setPartnerName(data.partnerName || 'Stranger');
+      setIsWaitingPartner(false);
+      setPartnerAccepted(false);
+      setCallState('preview');
 
+      // For simulated preview, pre-set stream
       if (data.isSimulated) {
-        // Instant preview mode
-        setCallState('connected');
-        startTimer();
         const simStream = createSimulatedStrangerStream(data.partnerCountry || 'Global');
         setRemoteStream(simStream);
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = simStream;
-          remoteVideoRef.current.play().catch(console.warn);
-        }
+      }
+    });
+
+    // Waiting for partner confirmation
+    socket.on('waiting_partner_accept', () => {
+      setIsWaitingPartner(true);
+    });
+
+    socket.on('partner_accepted', () => {
+      setPartnerAccepted(true);
+    });
+
+    // Both users accepted match -> start video call!
+    socket.on('call_start', async (data: { conversationId: string; isInitiator: boolean }) => {
+      setCallState('connecting');
+      setIsWaitingPartner(false);
+      setPartnerAccepted(false);
+
+      if (remoteStream && remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStream;
+        remoteVideoRef.current.play().catch(console.warn);
+        setCallState('connected');
+        startTimer();
         setShowChat(true);
         return;
       }
-
-      setCallState('connecting');
 
       await rtc.createPeerConnection();
       rtc.addLocalStream(stream);
@@ -321,9 +405,8 @@ export default function ChatPage() {
       setCallState('ended');
       setRemoteStream(null);
       if (durationTimerRef.current) clearInterval(durationTimerRef.current);
-      toast('Stranger disconnected.', { icon: '👋' });
+      toast('Stranger disconnected or passed.', { icon: '👋' });
 
-      // Trigger star rating prompt
       if (activeConversationId) {
         setLastFinishedConvId(activeConversationId);
         setShowRating(true);
@@ -347,6 +430,7 @@ export default function ChatPage() {
       setBalance(data.balance);
     });
 
+    // 1-minute call reward event
     socket.on('token_reward', (data: { amount: number; balance: number; message?: string }) => {
       setBalance(data.balance);
       setRewardNotification({
@@ -355,12 +439,13 @@ export default function ChatPage() {
         text: `+${data.amount} Face Token! 🪙`,
         sub: '1-min call reward',
       });
-      toast.success(data.message || '+1 Face Token earned! 🪙', {
+      toast.success(data.message || '+1 Face Token earned for 1-minute conversation!', {
         icon: '🪙',
         duration: 3500,
       });
     });
 
+    // Skip penalty event (-2 Face Tokens)
     socket.on('token_penalty', (data: { amount: number; balance: number; message?: string }) => {
       setBalance(data.balance);
       setRewardNotification({
@@ -394,15 +479,34 @@ export default function ChatPage() {
     });
   };
 
+  // Start duration timer and guarantee 1-minute reward sync locally as well
   const startTimer = () => {
     if (durationTimerRef.current) clearInterval(durationTimerRef.current);
     setDuration(0);
     durationTimerRef.current = setInterval(() => {
-      setDuration((prev) => prev + 1);
+      setDuration((prev) => {
+        const nextSec = prev + 1;
+        // Every 60 seconds, ensure UI reward triggers
+        if (nextSec > 0 && nextSec % 60 === 0) {
+          const currentBal = useWalletStore.getState().balance;
+          setBalance(currentBal + 1);
+          setRewardNotification({
+            id: Date.now(),
+            type: 'reward',
+            text: '+1 Face Token! 🪙',
+            sub: '1-min call reward',
+          });
+          toast.success('+1 Face Token earned for 1-minute conversation! 🪙', {
+            icon: '🪙',
+            duration: 3500,
+          });
+          fetchBalance();
+        }
+        return nextSec;
+      });
     }, 1000);
   };
 
-  // Video is strictly kept ON per platform rules; only microphone is toggled
   const toggleMic = () => {
     if (localStream) {
       localStream.getAudioTracks().forEach((track) => {
@@ -410,6 +514,22 @@ export default function ChatPage() {
       });
       setIsMuted(!isMuted);
     }
+  };
+
+  // Match Preview Acceptance (Tick ✓)
+  const handleAcceptMatch = () => {
+    if (socketRef.current) {
+      socketRef.current.emit('accept_match');
+    }
+  };
+
+  // Match Preview Rejection (Cross ✕) -> -2 Face Tokens & Next
+  const handleRejectMatch = () => {
+    if (socketRef.current) {
+      socketRef.current.emit('reject_match');
+    }
+    setCallState('searching');
+    setRemoteStream(null);
   };
 
   const handleNext = () => {
@@ -450,10 +570,54 @@ export default function ChatPage() {
     return `${mins.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Get CSS filter and backdrop style for virtual background presets
+  const getBackgroundStyles = () => {
+    switch (backgroundPreset) {
+      case 'blur':
+        return {
+          cardFilter: 'none',
+          pipFilter: 'contrast(1.05) saturate(1.1)',
+          ambientClass: 'bg-gradient-to-tr from-slate-900 via-gray-900 to-black',
+        };
+      case 'studio':
+        return {
+          cardFilter: 'contrast(1.08) brightness(0.98)',
+          pipFilter: 'contrast(1.15) brightness(0.95)',
+          ambientClass: 'bg-gradient-to-tr from-zinc-950 via-neutral-900 to-black',
+        };
+      case 'cyberpunk':
+        return {
+          cardFilter: 'none',
+          pipFilter: 'hue-rotate(280deg) saturate(1.3) contrast(1.1)',
+          ambientClass: 'bg-gradient-to-tr from-violet-950 via-purple-900 to-cyan-950',
+        };
+      case 'sunset':
+        return {
+          cardFilter: 'none',
+          pipFilter: 'sepia(0.25) saturate(1.35) hue-rotate(-15deg)',
+          ambientClass: 'bg-gradient-to-tr from-amber-950 via-orange-950 to-rose-950',
+        };
+      case 'cozy':
+        return {
+          cardFilter: 'none',
+          pipFilter: 'sepia(0.2) brightness(1.04) saturate(1.15)',
+          ambientClass: 'bg-gradient-to-tr from-amber-950 via-yellow-950 to-stone-900',
+        };
+      default:
+        return {
+          cardFilter: 'none',
+          pipFilter: 'none',
+          ambientClass: 'bg-[#0A0A0F]',
+        };
+    }
+  };
+
+  const bgStyles = getBackgroundStyles();
+
   return (
     <div className="h-screen w-screen bg-[#0A0A0F] text-[#F8F8FF] flex flex-col overflow-hidden font-sans select-none">
       {/* Top Status Bar */}
-      <div className="h-14 bg-[#111118]/80 backdrop-blur border-b border-[#2A2A3A] px-4 flex items-center justify-between z-30">
+      <div className="h-14 bg-[#111118]/85 backdrop-blur border-b border-[#2A2A3A] px-4 flex items-center justify-between z-30">
         <div className="flex items-center gap-3">
           <div className="text-lg font-black tracking-wider">
             FACE<span className="bg-clip-text text-transparent bg-gradient-to-r from-[#7C3AED] to-[#EC4899]">CHAT</span>
@@ -520,11 +684,15 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* Main Video Viewport */}
-      <div className="flex-1 relative bg-black flex overflow-hidden">
-        {/* Remote Video Container */}
-        <div className="flex-1 relative flex items-center justify-center bg-[#07070A]">
-          {/* Searching / Connecting State Overlays */}
+      {/* Main Video Viewport (Contained & Full Face Visible Layout) */}
+      <div className={`flex-1 relative flex items-center justify-center p-3 sm:p-6 overflow-hidden transition-all duration-500 ${bgStyles.ambientClass}`}>
+        {/* Subtle Ambient Lighting Aura behind the video card */}
+        <div className="absolute inset-0 opacity-20 pointer-events-none bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-[#7C3AED] via-transparent to-transparent blur-3xl" />
+
+        {/* Video Card Container - Bounded so full face is 100% visible on laptops */}
+        <div className="relative w-full max-w-4xl max-h-[72vh] aspect-[16/10] sm:aspect-video rounded-3xl overflow-hidden bg-[#0D0D14] border-2 border-[#2A2A3A] shadow-[0_15px_50px_rgba(0,0,0,0.8)] flex items-center justify-center">
+          
+          {/* Searching State Overlay */}
           {callState === 'searching' && (
             <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#0A0A0F] text-center p-6">
               <div className="relative mb-6">
@@ -541,7 +709,7 @@ export default function ChatPage() {
               </p>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => socketRef.current?.emit('simulate_stranger')}
+                  onClick={() => socketRef.current?.emit('simulate_stranger', { photo: myPhoto })}
                   className="px-4 py-2 bg-[#1A1A26] border border-[#2A2A3A] text-xs font-semibold text-[#8B8BA7] hover:text-white rounded-xl transition flex items-center gap-1.5"
                 >
                   <Sparkles className="w-3.5 h-3.5 text-[#EC4899]" />
@@ -551,6 +719,7 @@ export default function ChatPage() {
             </div>
           )}
 
+          {/* Connecting State Overlay */}
           {callState === 'connecting' && (
             <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#0A0A0F] text-center p-6">
               <Loader2 className="w-12 h-12 text-[#EC4899] animate-spin mb-4" />
@@ -561,19 +730,42 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* Remote Video (always decoded in DOM) */}
+          {/* Remote Video (Decoded in DOM with object-contain so COMPLETE FACE is visible) */}
           <video
             ref={remoteVideoRef}
             autoPlay
             playsInline
-            className={`w-full h-full object-cover transition-opacity duration-300 ${
+            className={`w-full h-full ${
+              videoFitMode === 'contain' ? 'object-contain' : 'object-cover'
+            } transition-opacity duration-300 ${
               callState === 'connected' ? 'opacity-100' : 'opacity-0 pointer-events-none'
             }`}
           />
 
-          {/* Floating Chat Bubbles over video so messages are always visible */}
+          {/* View Mode Toggle Button (Contain/Fit vs Fill) */}
+          {callState === 'connected' && (
+            <button
+              onClick={() => setVideoFitMode(videoFitMode === 'contain' ? 'cover' : 'contain')}
+              className="absolute top-4 right-4 z-20 px-3 py-1.5 rounded-xl bg-black/60 backdrop-blur border border-white/15 text-white text-xs font-semibold hover:bg-black/80 transition flex items-center gap-1.5 shadow-md"
+              title={videoFitMode === 'contain' ? 'Switch to Full Screen (Cropped)' : 'Switch to Fit (Full Face Visible)'}
+            >
+              {videoFitMode === 'contain' ? (
+                <>
+                  <Maximize2 className="w-3.5 h-3.5 text-[#EC4899]" />
+                  <span>Fit View (Uncropped)</span>
+                </>
+              ) : (
+                <>
+                  <Minimize2 className="w-3.5 h-3.5 text-[#06B6D4]" />
+                  <span>Fill Screen</span>
+                </>
+              )}
+            </button>
+          )}
+
+          {/* Floating Chat Bubbles over video */}
           {!showChat && chatMessages.length > 0 && callState === 'connected' && (
-            <div className="absolute bottom-24 left-6 z-20 max-w-sm space-y-2 pointer-events-none">
+            <div className="absolute bottom-6 left-6 z-20 max-w-sm space-y-2 pointer-events-none">
               {chatMessages.slice(-2).map((msg, i) => (
                 <div
                   key={i}
@@ -588,14 +780,15 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* Local PiP Video (Always On) */}
-          <div className="absolute bottom-20 right-4 z-20 w-36 h-48 sm:w-44 sm:h-56 bg-[#111118] rounded-2xl overflow-hidden border-2 border-[#2A2A3A] shadow-2xl">
+          {/* Local PiP Video (With Background Styling applied) */}
+          <div className="absolute bottom-4 right-4 z-20 w-36 h-48 sm:w-44 sm:h-56 bg-[#111118] rounded-2xl overflow-hidden border-2 border-[#7C3AED]/50 shadow-2xl">
             <video
               ref={localVideoRef}
               autoPlay
               playsInline
               muted
-              className="w-full h-full object-cover"
+              style={{ filter: bgStyles.pipFilter }}
+              className="w-full h-full object-cover transition-all"
             />
             <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur text-[10px] text-white font-medium flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
@@ -648,7 +841,21 @@ export default function ChatPage() {
             {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
           </button>
 
-          {/* Prominent Chat button */}
+          {/* Background Changer Button */}
+          <button
+            onClick={() => setShowBackgroundSelector(!showBackgroundSelector)}
+            className={`p-3.5 rounded-2xl border transition flex items-center gap-1.5 ${
+              showBackgroundSelector || backgroundPreset !== 'none'
+                ? 'bg-[#7C3AED]/20 border-[#7C3AED] text-purple-300'
+                : 'bg-[#1A1A26] border-[#2A2A3A] text-[#8B8BA7] hover:text-white hover:bg-[#2A2A3A]'
+            }`}
+            title="Change Video Background"
+          >
+            <Palette className="w-5 h-5" />
+            <span className="text-xs font-bold hidden sm:inline">Background</span>
+          </button>
+
+          {/* Chat toggle button */}
           <button
             onClick={() => setShowChat(!showChat)}
             className={`p-3.5 rounded-2xl border transition relative flex items-center gap-1.5 ${
@@ -696,6 +903,33 @@ export default function ChatPage() {
         </div>
       </div>
 
+      {/* Background Selector Popover */}
+      <BackgroundSelector
+        isOpen={showBackgroundSelector}
+        activePreset={backgroundPreset}
+        onSelect={(p) => setBackgroundPreset(p)}
+        onClose={() => setShowBackgroundSelector(false)}
+      />
+
+      {/* Compulsory Photo Setup Modal */}
+      <CompulsoryPhotoModal
+        isOpen={showPhotoModal}
+        localVideoRef={localVideoRef}
+        onPhotoSaved={handlePhotoSaved}
+      />
+
+      {/* Match Preview / Stranger Photo Approval Gate (Tick ✓ / Cross ✕) */}
+      <MatchPreviewModal
+        isOpen={callState === 'preview'}
+        partnerPhoto={partnerPhoto}
+        partnerCountry={partnerCountry}
+        partnerName={partnerName}
+        isWaitingPartner={isWaitingPartner}
+        partnerAccepted={partnerAccepted}
+        onAccept={handleAcceptMatch}
+        onReject={handleRejectMatch}
+      />
+
       {/* Safety & Moderation Modals */}
       <ReportModal
         isOpen={showReport}
@@ -735,7 +969,7 @@ export default function ChatPage() {
               You Have 0 Face Tokens!
             </h3>
             <p className="text-sm text-[#8B8BA7] mb-6 leading-relaxed">
-              FaceChat requires at least 1 Face Token to talk to strangers. Refill your tokens now or get the bundle to keep conversations flowing!
+              FaceChat requires at least 1 Face Token to talk to strangers. Refill your tokens now to keep conversations flowing!
             </p>
 
             <div className="bg-[#1A1A26] rounded-2xl p-4 border border-[#2A2A3A] mb-6 flex items-center justify-between">

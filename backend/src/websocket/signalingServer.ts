@@ -5,7 +5,7 @@ import { config } from '../config';
 import { logger, logEvent } from '../utils/logger';
 import { createConversation, startConversation, endConversation } from '../modules/conversations/conversationService';
 import { isBlocked } from '../modules/moderation/blockService';
-import { validateGuestSession, getGuestTimeRemaining, getGuestTokens, updateGuestTokens } from '../modules/security/guestService';
+import { validateGuestSession, getGuestTimeRemaining, getGuestTokens, updateGuestTokens, createGuestSession } from '../modules/security/guestService';
 import { preferenceService } from '../modules/subscriptions/preferenceService';
 import { walletService, getBalance } from '../modules/wallet/walletService';
 import { ratingService } from '../modules/ratings/ratingService';
@@ -20,6 +20,8 @@ interface ClientSession {
   preference: 'anyone' | 'female' | 'male';
   gender?: string;
   country?: string;
+  photo?: string;
+  acceptedMatch?: boolean;
   matchedPeerSocketId?: string;
   activeConversationId?: string;
   minuteTimer?: NodeJS.Timeout;
@@ -27,8 +29,10 @@ interface ClientSession {
 
 const activeSockets = new Map<string, ClientSession>();
 const waitingQueue: ClientSession[] = [];
+// In-memory socket fallback balance map to guarantee tokens never get lost
+const socketBalanceMap = new Map<string, number>();
 
-// Helper to get balance for either registered user or guest
+// Helper to get balance for registered user, guest, or fallback socket session
 async function getUserOrGuestBalance(session: ClientSession): Promise<number> {
   if (session.userId) {
     try {
@@ -39,12 +43,17 @@ async function getUserOrGuestBalance(session: ClientSession): Promise<number> {
   }
   if (session.guestToken) {
     try {
-      return await getGuestTokens(session.guestToken);
+      const b = await getGuestTokens(session.guestToken);
+      if (typeof b === 'number') return b;
     } catch {
-      return config.business.initialFaceTokens || 10;
+      // Fall through to in-memory fallback
     }
   }
-  return config.business.initialFaceTokens || 10;
+
+  if (!socketBalanceMap.has(session.socketId)) {
+    socketBalanceMap.set(session.socketId, config.business.initialFaceTokens || 10);
+  }
+  return socketBalanceMap.get(session.socketId) || 10;
 }
 
 // Helper to adjust balance for either registered user or guest
@@ -76,16 +85,22 @@ async function adjustUserOrGuestBalance(session: ClientSession, delta: number): 
 
   if (session.guestToken) {
     try {
-      return await updateGuestTokens(session.guestToken, delta);
+      const res = await updateGuestTokens(session.guestToken, delta);
+      socketBalanceMap.set(session.socketId, res);
+      return res;
     } catch {
-      return config.business.initialFaceTokens || 10;
+      // Fallback
     }
   }
 
-  return 0;
+  // Socket ID fallback
+  const cur = socketBalanceMap.get(session.socketId) ?? (config.business.initialFaceTokens || 10);
+  const next = Math.max(0, cur + delta);
+  socketBalanceMap.set(session.socketId, next);
+  return next;
 }
 
-// Starts the 1-minute recurring reward ticker (+1 Face Token every 60s)
+// Starts the 1-minute recurring reward ticker (+1 Face Token every 60s for BOTH users)
 function startMinuteRewardTicker(sessionA: ClientSession, sessionB: ClientSession, io: SocketIOServer) {
   if (sessionA.minuteTimer) clearInterval(sessionA.minuteTimer);
   if (sessionB.minuteTimer) clearInterval(sessionB.minuteTimer);
@@ -158,8 +173,21 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
         }
       }
 
-      // Allow anonymous connection with guest flag
-      (socket as any).isGuest = true;
+      // Automatically provision a guest session so every connection has a valid token
+      try {
+        const autoGuest = await createGuestSession(
+          (socket.handshake.address as string) || '127.0.0.1',
+          (socket.handshake.headers['user-agent'] as string) || 'Browser'
+        );
+        (socket as any).guestSessionId = autoGuest.id;
+        (socket as any).guestToken = autoGuest.sessionToken;
+        (socket as any).isGuest = true;
+        (socket as any).country = autoGuest.country;
+        (socket as any).gender = autoGuest.gender;
+      } catch {
+        (socket as any).isGuest = true;
+      }
+
       next();
     } catch (err) {
       next(err as any);
@@ -187,6 +215,11 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
 
     activeSockets.set(socket.id, session);
     logger.info('Socket connected', { socketId: socket.id, userId, isGuest });
+
+    // Send assigned guestToken if created on handshake
+    if (guestToken) {
+      socket.emit('assigned_guest_token', { guestToken });
+    }
 
     // Broadcast initial token balance immediately upon connection
     getUserOrGuestBalance(session).then((balance) => {
@@ -217,9 +250,12 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
       }, 20000); // Check every 20s
     }
 
-    // Join matchmaking queue
-    socket.on('join_queue', async (data: { preference?: 'anyone' | 'female' | 'male' }) => {
+    // Join matchmaking queue with attached photo
+    socket.on('join_queue', async (data: { preference?: 'anyone' | 'female' | 'male'; photo?: string }) => {
       session.preference = data?.preference || 'anyone';
+      if (data?.photo) {
+        session.photo = data.photo;
+      }
 
       // STRICT ZERO-TOKENS CHECK: Must have > 0 tokens to talk or queue
       const currentBalance = await getUserOrGuestBalance(session);
@@ -245,8 +281,77 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
       findAndConnectMatch(socket, session, io);
     });
 
-    // Simulate stranger (dev/testing mode)
-    socket.on('simulate_stranger', async () => {
+    // User accepts photo in match preview (Tick ✓)
+    socket.on('accept_match', () => {
+      session.acceptedMatch = true;
+      const peerId = session.matchedPeerSocketId;
+      if (!peerId) return;
+
+      if (peerId === 'simulated_stranger_bot') {
+        // Simulated stranger accepts immediately
+        socket.emit('call_start', {
+          conversationId: session.activeConversationId,
+          isInitiator: true,
+        });
+        return;
+      }
+
+      const peer = activeSockets.get(peerId);
+      if (peer) {
+        if (peer.acceptedMatch) {
+          // Both accepted! Start live call on both ends
+          socket.emit('call_start', {
+            conversationId: session.activeConversationId,
+            isInitiator: true,
+          });
+          io.to(peer.socketId).emit('call_start', {
+            conversationId: session.activeConversationId,
+            isInitiator: false,
+          });
+
+          // Start 1-min recurring reward ticker
+          startMinuteRewardTicker(session, peer, io);
+        } else {
+          // Partner hasn't ticked yet
+          socket.emit('waiting_partner_accept');
+          io.to(peer.socketId).emit('partner_accepted');
+        }
+      }
+    });
+
+    // User rejects photo in match preview (Cross ✕) -> -2 Face Tokens penalty and skip
+    socket.on('reject_match', async () => {
+      const newBalance = await adjustUserOrGuestBalance(session, -2);
+      socket.emit('token_penalty', {
+        amount: 2,
+        balance: newBalance,
+        message: '-2 Face Tokens (Skipped person)',
+      });
+
+      const peerId = session.matchedPeerSocketId;
+      await handleEndCall(socket, 'user_rejected');
+
+      if (peerId && peerId !== 'simulated_stranger_bot') {
+        const peer = activeSockets.get(peerId);
+        if (peer) {
+          io.to(peerId).emit('peer_disconnected', { reason: 'Partner skipped this match' });
+        }
+      }
+
+      if (newBalance <= 0) {
+        socket.emit('zero_coins', {
+          message: 'You have 0 Face Tokens! Refill tokens to continue meeting strangers.',
+          balance: 0,
+        });
+        return;
+      }
+
+      findAndConnectMatch(socket, session, io);
+    });
+
+    // Simulate stranger (instant preview mode)
+    socket.on('simulate_stranger', async (data?: { photo?: string }) => {
+      if (data?.photo) session.photo = data.photo;
       const currentBal = await getUserOrGuestBalance(session);
       if (currentBal <= 0) {
         socket.emit('zero_coins', {
@@ -257,8 +362,15 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
       }
 
       await handleEndCall(socket, 'new_search');
-      const countries = ['United States', 'United Kingdom', 'Japan', 'France', 'Brazil', 'Germany', 'Canada', 'Australia'];
-      const randomCountry = countries[Math.floor(Math.random() * countries.length)];
+      const sampleCountries = ['United States', 'United Kingdom', 'Japan', 'France', 'Brazil', 'Germany', 'Canada', 'Australia'];
+      const randomCountry = sampleCountries[Math.floor(Math.random() * sampleCountries.length)];
+      const samplePhotos = [
+        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500&auto=format&fit=crop&q=80',
+        'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=500&auto=format&fit=crop&q=80',
+        'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=500&auto=format&fit=crop&q=80',
+        'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=500&auto=format&fit=crop&q=80',
+      ];
+      const botPhoto = samplePhotos[Math.floor(Math.random() * samplePhotos.length)];
       const simGuestId = `guest_sim_${uuidv4().substring(0, 8)}`;
       const conv = await createConversation(
         session.userId || null,
@@ -270,16 +382,18 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
 
       session.activeConversationId = conv.id;
       session.matchedPeerSocketId = 'simulated_stranger_bot';
+      session.acceptedMatch = false;
       removeFromQueue(session.socketId);
 
-      socket.emit('matched', {
+      socket.emit('match_preview', {
         conversationId: conv.id,
         isInitiator: true,
         partnerCountry: randomCountry,
+        partnerPhoto: botPhoto,
+        partnerName: 'Stranger',
         isSimulated: true,
       });
 
-      // Start 1-min reward ticker for preview as well
       const botSession: ClientSession = {
         socketId: 'simulated_stranger_bot',
         isGuest: true,
@@ -295,7 +409,7 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
             timestamp: Date.now(),
           });
         }
-      }, 2000);
+      }, 2500);
     });
 
     // WebRTC Signaling
@@ -326,7 +440,6 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
 
     // Next person (user-initiated skip) -> Deduct 2 Face Tokens
     socket.on('next', async () => {
-      // Deduct -2 Face Tokens skip penalty
       const newBalance = await adjustUserOrGuestBalance(session, -2);
       socket.emit('token_penalty', {
         amount: 2,
@@ -336,7 +449,6 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
 
       await handleEndCall(socket, 'user_skipped');
 
-      // If user hit 0 tokens, block queuing and show refill screen
       if (newBalance <= 0) {
         socket.emit('zero_coins', {
           message: 'You have 0 Face Tokens! Refill tokens to continue meeting strangers.',
@@ -368,7 +480,7 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
           'Haha totally agree with you!',
           'Where in the world are you connecting from?',
           'Such a cool app, matchmaking is so quick!',
-          'Love the Gen-Z vibes here!',
+          'Love the vibes here!',
         ];
         const reply = responses[Math.floor(Math.random() * responses.length)];
         setTimeout(() => {
@@ -429,6 +541,7 @@ async function handleEndCall(socket: Socket, reason: string) {
 
   session.matchedPeerSocketId = undefined;
   session.activeConversationId = undefined;
+  session.acceptedMatch = false;
 
   if (peerId) {
     const peerSession = activeSockets.get(peerId);
@@ -439,6 +552,7 @@ async function handleEndCall(socket: Socket, reason: string) {
       }
       peerSession.matchedPeerSocketId = undefined;
       peerSession.activeConversationId = undefined;
+      peerSession.acceptedMatch = false;
     }
     socket.to(peerId).emit('peer_disconnected', { reason, conversationId: convId });
   }
@@ -476,6 +590,8 @@ async function findAndConnectMatch(socket: Socket, session: ClientSession, io: S
     // Link peers
     session.matchedPeerSocketId = peer.socketId;
     peer.matchedPeerSocketId = session.socketId;
+    session.acceptedMatch = false;
+    peer.acceptedMatch = false;
 
     // Create conversation in DB
     const conv = await createConversation(
@@ -489,23 +605,24 @@ async function findAndConnectMatch(socket: Socket, session: ClientSession, io: S
     session.activeConversationId = conv.id;
     peer.activeConversationId = conv.id;
 
-    // WebRTC initiation
-    socket.emit('matched', {
+    // Emit match_preview with photo to both peers
+    socket.emit('match_preview', {
       conversationId: conv.id,
       isInitiator: true,
       partnerCountry: peer.country || 'Global',
       partnerGender: peer.gender || 'prefer_not_to_say',
+      partnerPhoto: peer.photo || null,
+      partnerName: peer.userId ? 'FaceChat Member' : 'Stranger',
     });
 
-    io.to(peer.socketId).emit('matched', {
+    io.to(peer.socketId).emit('match_preview', {
       conversationId: conv.id,
       isInitiator: false,
       partnerCountry: session.country || 'Global',
       partnerGender: session.gender || 'prefer_not_to_say',
+      partnerPhoto: session.photo || null,
+      partnerName: session.userId ? 'FaceChat Member' : 'Stranger',
     });
-
-    // Start 1-minute recurring reward ticker (+1 Token every 60s for both peers)
-    startMinuteRewardTicker(session, peer, io);
 
     logEvent('match_created', { conversationId: conv.id, peerA: socket.id, peerB: peer.socketId });
   } else {
