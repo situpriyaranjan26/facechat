@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - FRONTEND_URL=http://localhost:3000
+      - SESSION_SECRET=production_facechat_session_secret_998234
+      - JWT_SECRET=production_facechat_jwt_secret_441235
+    volumes:
+      - backend-data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:4000
+        - NEXT_PUBLIC_WS_URL=http://localhost:4000
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend-data:
