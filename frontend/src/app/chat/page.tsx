@@ -43,7 +43,6 @@ import BackgroundSelector, { BackgroundPreset } from './components/BackgroundSel
 import ARFilterOverlay, { ARFilterType } from './components/ARFilterOverlay';
 import ARFiltersDrawer from './components/ARFiltersDrawer';
 import RazorpayModal, { RazorpayItem } from '@/app/components/payments/RazorpayModal';
-import ActiveUsersShowcase from '@/app/components/ActiveUsersShowcase';
 
 type CallState = 'idle' | 'searching' | 'preview' | 'connecting' | 'connected' | 'ended';
 
@@ -173,8 +172,7 @@ export default function ChatPage() {
   const [activeFilter, setActiveFilter] = useState<ARFilterType>('none');
   const [showFilterDrawer, setShowFilterDrawer] = useState(false);
 
-  // Feature: Most Active Users Showcase & Razorpay Checkout
-  const [showActiveUsersModal, setShowActiveUsersModal] = useState(false);
+  // Feature: Razorpay Checkout
   const [razorpayItem, setRazorpayItem] = useState<RazorpayItem | null>(null);
 
   // Refs
@@ -765,16 +763,6 @@ export default function ChatPage() {
             </button>
           )}
 
-          {/* Active Stars Direct Connect ($2/hr) */}
-          <button
-            onClick={() => setShowActiveUsersModal(true)}
-            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 rounded-full bg-gradient-to-r from-pink-500/20 to-purple-500/20 hover:from-pink-500/30 hover:to-purple-500/30 border border-pink-500/40 text-xs font-bold text-pink-300 transition shadow-sm flex-shrink-0"
-          >
-            <span>🔥</span>
-            <span className="hidden sm:inline">Active Stars</span>
-            <span className="text-[10px] bg-pink-500/30 px-1.5 py-0.5 rounded-full text-white">$2/hr</span>
-          </button>
-
           {partnerCountry && callState === 'connected' && (
             <div className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 rounded-full bg-[#1A1A26] border border-[#2A2A3A] text-xs font-semibold text-white shadow-sm flex-shrink-0">
               <span className="text-sm">{getCountryFlag(partnerCountry)}</span>
@@ -910,14 +898,6 @@ export default function ChatPage() {
                 >
                   <Sparkles className="w-3.5 h-3.5 text-[#EC4899]" />
                   <span>Instant Match Preview</span>
-                </button>
-
-                <button
-                  onClick={() => setShowActiveUsersModal(true)}
-                  className="px-4 py-2 bg-gradient-to-r from-pink-500/20 to-purple-500/20 hover:from-pink-500/30 hover:to-purple-500/30 border border-pink-500/40 text-xs font-bold text-pink-300 rounded-xl transition flex items-center gap-1.5"
-                >
-                  <span>🔥</span>
-                  <span>Meet Active Stars ($2/hr)</span>
                 </button>
               </div>
             </div>
@@ -1202,27 +1182,6 @@ export default function ChatPage() {
           fetchBalance();
         }}
       />
-
-      {/* Active Users Showcase Direct Connect Modal ($2/hr) */}
-      {showActiveUsersModal && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-[#111118] border border-[#2A2A3A] rounded-3xl max-w-4xl w-full p-6 relative max-h-[90vh] overflow-y-auto shadow-2xl">
-            <button
-              onClick={() => setShowActiveUsersModal(false)}
-              className="absolute top-4 right-4 p-2 text-zinc-400 hover:text-white rounded-full bg-zinc-800/80 hover:bg-zinc-700 transition"
-            >
-              ✕
-            </button>
-            <ActiveUsersShowcase
-              compact={true}
-              onDirectConnectInitiated={(user) => {
-                setShowActiveUsersModal(false);
-                socketRef.current?.emit('simulate_stranger', { photo: myPhoto });
-              }}
-            />
-          </div>
-        </div>
-      )}
 
       {/* Match Preview / Stranger Photo Approval Gate (Tick ✓ / Cross ✕) */}
       <MatchPreviewModal
