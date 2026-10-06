@@ -111,7 +111,7 @@ function createSimulatedStrangerStream(country: string): MediaStream {
 export default function ChatPage() {
   const router = useRouter();
   const { user, isAuthenticated, isGuest, guestToken, guestTimeRemaining, guestWarning } = useAuthStore();
-  const { balance, fetchBalance } = useWalletStore();
+  const { balance, setBalance, fetchBalance } = useWalletStore();
 
   const [callState, setCallState] = useState<CallState>('idle');
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -130,6 +130,13 @@ export default function ChatPage() {
   const [showBlock, setShowBlock] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showRating, setShowRating] = useState(false);
+  const [showZeroModal, setShowZeroModal] = useState(false);
+  const [rewardNotification, setRewardNotification] = useState<{
+    id: number;
+    type: 'reward' | 'penalty';
+    text: string;
+    sub: string;
+  } | null>(null);
   const [lastFinishedConvId, setLastFinishedConvId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<Array<{ text: string; sender: 'me' | 'peer'; timestamp: number }>>([]);
   const [showGuestExpired, setShowGuestExpired] = useState(false);
@@ -158,6 +165,13 @@ export default function ChatPage() {
       cleanup();
     };
   }, []);
+
+  useEffect(() => {
+    if (rewardNotification) {
+      const t = setTimeout(() => setRewardNotification(null), 3800);
+      return () => clearTimeout(t);
+    }
+  }, [rewardNotification]);
 
   const fetchPreferenceStatus = async () => {
     try {
@@ -329,9 +343,43 @@ export default function ChatPage() {
       fetchBalance();
     });
 
-    socket.on('zero_coins', (data: { message: string }) => {
+    socket.on('token_balance', (data: { balance: number }) => {
+      setBalance(data.balance);
+    });
+
+    socket.on('token_reward', (data: { amount: number; balance: number; message?: string }) => {
+      setBalance(data.balance);
+      setRewardNotification({
+        id: Date.now(),
+        type: 'reward',
+        text: `+${data.amount} Face Token! 🪙`,
+        sub: '1-min call reward',
+      });
+      toast.success(data.message || '+1 Face Token earned! 🪙', {
+        icon: '🪙',
+        duration: 3500,
+      });
+    });
+
+    socket.on('token_penalty', (data: { amount: number; balance: number; message?: string }) => {
+      setBalance(data.balance);
+      setRewardNotification({
+        id: Date.now(),
+        type: 'penalty',
+        text: `-${data.amount} Tokens ⚠️`,
+        sub: 'Skip penalty applied',
+      });
+      toast(data.message || '-2 Tokens (Skip penalty)', {
+        icon: '⚠️',
+        duration: 3000,
+      });
+    });
+
+    socket.on('zero_coins', (data: { message: string; balance?: number }) => {
+      setBalance(0);
+      setCallState('ended');
+      setShowZeroModal(true);
       toast.error(data.message || 'You need Face Tokens to talk! Refill at the wallet.');
-      router.push('/wallet');
     });
 
     socket.on('guest_warning', (data: { secondsRemaining: number; message?: string }) => {
@@ -365,10 +413,11 @@ export default function ChatPage() {
   };
 
   const handleNext = () => {
+    if (balance <= 0) {
+      setShowZeroModal(true);
+      return;
+    }
     if (socketRef.current) {
-      if (duration < 120 && callState === 'connected') {
-        toast('Skipping under 2 minutes (-2 Face Tokens)', { icon: '⚡' });
-      }
       socketRef.current.emit('next');
     }
     setCallState('searching');
@@ -432,7 +481,10 @@ export default function ChatPage() {
           )}
 
           {/* Face Tokens Balance Display */}
-          <CoinDisplay />
+          <CoinDisplay
+            balance={balance}
+            onClick={() => router.push('/wallet')}
+          />
 
           <button
             onClick={() => setShowChat(!showChat)}
@@ -449,6 +501,24 @@ export default function ChatPage() {
 
       {/* Guest Time Warning Banner */}
       <GuestWarningBanner />
+
+      {/* Animated Token Reward / Penalty Floating Banner */}
+      {rewardNotification && (
+        <div
+          key={rewardNotification.id}
+          className={`absolute top-16 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-2xl backdrop-blur-xl border shadow-2xl flex items-center gap-3 animate-bounce transition-all ${
+            rewardNotification.type === 'reward'
+              ? 'bg-gradient-to-r from-amber-500/95 via-yellow-400/95 to-amber-600/95 border-yellow-300 text-black shadow-[0_0_35px_rgba(251,191,36,0.7)]'
+              : 'bg-red-600/95 border-red-400 text-white shadow-[0_0_25px_rgba(239,68,68,0.6)]'
+          }`}
+        >
+          <span className="text-2xl">{rewardNotification.type === 'reward' ? '🪙' : '⚠️'}</span>
+          <div>
+            <div className="font-black text-sm tracking-wide">{rewardNotification.text}</div>
+            <div className="text-[10px] font-bold opacity-90">{rewardNotification.sub}</div>
+          </div>
+        </div>
+      )}
 
       {/* Main Video Viewport */}
       <div className="flex-1 relative bg-black flex overflow-hidden">
@@ -653,6 +723,48 @@ export default function ChatPage() {
         isOpen={showGuestExpired}
         onClose={() => router.push('/auth/signup')}
       />
+
+      {/* Strict Zero Tokens Modal */}
+      {showZeroModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+          <div className="bg-[#111118] border border-amber-500/40 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-[0_0_50px_rgba(245,158,11,0.25)] text-center animate-in zoom-in-95">
+            <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-amber-500/10 border-2 border-amber-400/40 flex items-center justify-center text-4xl shadow-[0_0_25px_rgba(245,158,11,0.3)] animate-pulse">
+              🪙
+            </div>
+            <h3 className="text-2xl font-black text-white mb-2 tracking-wide">
+              You Have 0 Face Tokens!
+            </h3>
+            <p className="text-sm text-[#8B8BA7] mb-6 leading-relaxed">
+              FaceChat requires at least 1 Face Token to talk to strangers. Refill your tokens now or get the bundle to keep conversations flowing!
+            </p>
+
+            <div className="bg-[#1A1A26] rounded-2xl p-4 border border-[#2A2A3A] mb-6 flex items-center justify-between">
+              <div className="text-left">
+                <div className="font-extrabold text-white text-base">Popular Refill Bundle</div>
+                <div className="text-xs text-amber-400 font-bold">1,000 Face Tokens</div>
+              </div>
+              <div className="text-right">
+                <span className="text-xl font-black text-white">$4.00</span>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <button
+                onClick={() => router.push('/wallet')}
+                className="w-full py-4 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-600 hover:from-amber-400 hover:to-yellow-500 text-black font-extrabold rounded-2xl transition shadow-[0_0_30px_rgba(245,158,11,0.5)] active:scale-95"
+              >
+                Refill Tokens Now (1,000 Tokens) ⚡
+              </button>
+              <button
+                onClick={() => setShowZeroModal(false)}
+                className="w-full py-3 bg-[#1A1A26] hover:bg-[#252538] text-[#8B8BA7] hover:text-white font-bold rounded-2xl border border-[#2A2A3A] transition text-sm"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

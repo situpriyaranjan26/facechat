@@ -5,9 +5,9 @@ import { config } from '../config';
 import { logger, logEvent } from '../utils/logger';
 import { createConversation, startConversation, endConversation } from '../modules/conversations/conversationService';
 import { isBlocked } from '../modules/moderation/blockService';
-import { validateGuestSession, getGuestTimeRemaining } from '../modules/security/guestService';
+import { validateGuestSession, getGuestTimeRemaining, getGuestTokens, updateGuestTokens } from '../modules/security/guestService';
 import { preferenceService } from '../modules/subscriptions/preferenceService';
-import { getBalance } from '../modules/wallet/walletService';
+import { walletService, getBalance } from '../modules/wallet/walletService';
 import { ratingService } from '../modules/ratings/ratingService';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -15,16 +15,110 @@ interface ClientSession {
   socketId: string;
   userId?: string;
   guestSessionId?: string;
+  guestToken?: string;
   isGuest: boolean;
   preference: 'anyone' | 'female' | 'male';
   gender?: string;
   country?: string;
   matchedPeerSocketId?: string;
   activeConversationId?: string;
+  minuteTimer?: NodeJS.Timeout;
 }
 
 const activeSockets = new Map<string, ClientSession>();
 const waitingQueue: ClientSession[] = [];
+
+// Helper to get balance for either registered user or guest
+async function getUserOrGuestBalance(session: ClientSession): Promise<number> {
+  if (session.userId) {
+    try {
+      return await getBalance(session.userId);
+    } catch {
+      return 0;
+    }
+  }
+  if (session.guestToken) {
+    try {
+      return await getGuestTokens(session.guestToken);
+    } catch {
+      return config.business.initialFaceTokens || 10;
+    }
+  }
+  return config.business.initialFaceTokens || 10;
+}
+
+// Helper to adjust balance for either registered user or guest
+async function adjustUserOrGuestBalance(session: ClientSession, delta: number): Promise<number> {
+  if (session.userId) {
+    try {
+      if (delta > 0) {
+        await walletService.addTransaction(
+          session.userId,
+          delta,
+          'CONVERSATION_REWARD',
+          'Active 1-min call reward',
+          `call-reward-${uuidv4()}`
+        );
+      } else if (delta < 0) {
+        await walletService.addTransaction(
+          session.userId,
+          Math.abs(delta),
+          'SKIP_PENALTY',
+          'Stranger skip penalty',
+          `skip-penalty-${uuidv4()}`
+        );
+      }
+      return await getBalance(session.userId);
+    } catch {
+      return 0;
+    }
+  }
+
+  if (session.guestToken) {
+    try {
+      return await updateGuestTokens(session.guestToken, delta);
+    } catch {
+      return config.business.initialFaceTokens || 10;
+    }
+  }
+
+  return 0;
+}
+
+// Starts the 1-minute recurring reward ticker (+1 Face Token every 60s)
+function startMinuteRewardTicker(sessionA: ClientSession, sessionB: ClientSession, io: SocketIOServer) {
+  if (sessionA.minuteTimer) clearInterval(sessionA.minuteTimer);
+  if (sessionB.minuteTimer) clearInterval(sessionB.minuteTimer);
+
+  const timer = setInterval(async () => {
+    // If conversation no longer active, stop ticker
+    if (!sessionA.activeConversationId || !sessionA.matchedPeerSocketId) {
+      clearInterval(timer);
+      return;
+    }
+
+    // Award +1 Face Token to Session A
+    const balA = await adjustUserOrGuestBalance(sessionA, 1);
+    io.to(sessionA.socketId).emit('token_reward', {
+      amount: 1,
+      balance: balA,
+      message: '+1 Face Token earned for 1 min conversation! 🪙',
+    });
+
+    // Award +1 Face Token to Session B (if real peer)
+    if (sessionB.socketId && sessionB.socketId !== 'simulated_stranger_bot') {
+      const balB = await adjustUserOrGuestBalance(sessionB, 1);
+      io.to(sessionB.socketId).emit('token_reward', {
+        amount: 1,
+        balance: balB,
+        message: '+1 Face Token earned for 1 min conversation! 🪙',
+      });
+    }
+  }, 60000); // 60 seconds
+
+  sessionA.minuteTimer = timer;
+  sessionB.minuteTimer = timer;
+}
 
 export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
   const io = new SocketIOServer(httpServer, {
@@ -48,7 +142,7 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
           (socket as any).isGuest = false;
           return next();
         } catch {
-          // Token invalid, try guest
+          // Token invalid, fallback to guest
         }
       }
 
@@ -75,6 +169,7 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
   io.on('connection', (socket: Socket) => {
     const userId = (socket as any).userId;
     const guestSessionId = (socket as any).guestSessionId;
+    const guestToken = (socket as any).guestToken;
     const isGuest = (socket as any).isGuest;
     const gender = (socket as any).gender;
     const country = (socket as any).country;
@@ -83,6 +178,7 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
       socketId: socket.id,
       userId,
       guestSessionId,
+      guestToken,
       isGuest,
       gender,
       country: country || 'Global',
@@ -91,6 +187,11 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
 
     activeSockets.set(socket.id, session);
     logger.info('Socket connected', { socketId: socket.id, userId, isGuest });
+
+    // Broadcast initial token balance immediately upon connection
+    getUserOrGuestBalance(session).then((balance) => {
+      socket.emit('token_balance', { balance });
+    });
 
     // Periodically check 15-minute server guest session limit
     let guestCheckTimer: NodeJS.Timeout | null = null;
@@ -120,6 +221,16 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
     socket.on('join_queue', async (data: { preference?: 'anyone' | 'female' | 'male' }) => {
       session.preference = data?.preference || 'anyone';
 
+      // STRICT ZERO-TOKENS CHECK: Must have > 0 tokens to talk or queue
+      const currentBalance = await getUserOrGuestBalance(session);
+      if (currentBalance <= 0) {
+        socket.emit('zero_coins', {
+          message: 'You have 0 Face Tokens! Refill tokens or wait for bonus to start talking.',
+          balance: 0,
+        });
+        return;
+      }
+
       // Check FaceChat Preference Pass if preference is selected
       if (session.preference !== 'anyone' && session.userId) {
         const hasActivePass = await preferenceService.isPreferenceActive(session.userId);
@@ -131,20 +242,20 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
         }
       }
 
-      // Check Face Tokens balance for authenticated users
-      if (session.userId) {
-        const bal = await getBalance(session.userId);
-        if (bal <= 0) {
-          socket.emit('zero_coins', { message: 'You need Face Tokens to start talking!' });
-          return;
-        }
-      }
-
       findAndConnectMatch(socket, session, io);
     });
 
     // Simulate stranger (dev/testing mode)
     socket.on('simulate_stranger', async () => {
+      const currentBal = await getUserOrGuestBalance(session);
+      if (currentBal <= 0) {
+        socket.emit('zero_coins', {
+          message: 'You have 0 Face Tokens! Refill tokens to talk.',
+          balance: 0,
+        });
+        return;
+      }
+
       await handleEndCall(socket, 'new_search');
       const countries = ['United States', 'United Kingdom', 'Japan', 'France', 'Brazil', 'Germany', 'Canada', 'Australia'];
       const randomCountry = countries[Math.floor(Math.random() * countries.length)];
@@ -167,6 +278,14 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
         partnerCountry: randomCountry,
         isSimulated: true,
       });
+
+      // Start 1-min reward ticker for preview as well
+      const botSession: ClientSession = {
+        socketId: 'simulated_stranger_bot',
+        isGuest: true,
+        preference: 'anyone',
+      };
+      startMinuteRewardTicker(session, botSession, io);
 
       setTimeout(() => {
         if (session.activeConversationId === conv.id) {
@@ -205,9 +324,27 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
       }
     });
 
-    // Next person (user-initiated skip)
+    // Next person (user-initiated skip) -> Deduct 2 Face Tokens
     socket.on('next', async () => {
+      // Deduct -2 Face Tokens skip penalty
+      const newBalance = await adjustUserOrGuestBalance(session, -2);
+      socket.emit('token_penalty', {
+        amount: 2,
+        balance: newBalance,
+        message: '-2 Face Tokens (Skip penalty)',
+      });
+
       await handleEndCall(socket, 'user_skipped');
+
+      // If user hit 0 tokens, block queuing and show refill screen
+      if (newBalance <= 0) {
+        socket.emit('zero_coins', {
+          message: 'You have 0 Face Tokens! Refill tokens to continue meeting strangers.',
+          balance: 0,
+        });
+        return;
+      }
+
       findAndConnectMatch(socket, session, io);
     });
 
@@ -255,6 +392,7 @@ export function initSignalingServer(httpServer: HttpServer): SocketIOServer {
     // Disconnect
     socket.on('disconnect', async () => {
       if (guestCheckTimer) clearInterval(guestCheckTimer);
+      if (session.minuteTimer) clearInterval(session.minuteTimer);
       removeFromQueue(socket.id);
       await handleEndCall(socket, 'disconnected');
       activeSockets.delete(socket.id);
@@ -276,6 +414,12 @@ async function handleEndCall(socket: Socket, reason: string) {
   const session = activeSockets.get(socket.id);
   if (!session) return;
 
+  // Clean up minute reward ticker
+  if (session.minuteTimer) {
+    clearInterval(session.minuteTimer);
+    session.minuteTimer = undefined;
+  }
+
   const peerId = session.matchedPeerSocketId;
   const convId = session.activeConversationId;
 
@@ -289,6 +433,10 @@ async function handleEndCall(socket: Socket, reason: string) {
   if (peerId) {
     const peerSession = activeSockets.get(peerId);
     if (peerSession) {
+      if (peerSession.minuteTimer) {
+        clearInterval(peerSession.minuteTimer);
+        peerSession.minuteTimer = undefined;
+      }
       peerSession.matchedPeerSocketId = undefined;
       peerSession.activeConversationId = undefined;
     }
@@ -355,6 +503,9 @@ async function findAndConnectMatch(socket: Socket, session: ClientSession, io: S
       partnerCountry: session.country || 'Global',
       partnerGender: session.gender || 'prefer_not_to_say',
     });
+
+    // Start 1-minute recurring reward ticker (+1 Token every 60s for both peers)
+    startMinuteRewardTicker(session, peer, io);
 
     logEvent('match_created', { conversationId: conv.id, peerA: socket.id, peerB: peer.socketId });
   } else {

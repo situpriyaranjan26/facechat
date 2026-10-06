@@ -46,14 +46,36 @@ export const useWalletStore = create<WalletState>((set) => ({
   fetchBalance: async () => {
     try {
       const res = await apiClient.get('/wallet/balance');
-      const b = res.data?.data?.balance ?? 0;
+      const b = res.data?.balance ?? res.data?.data?.balance ?? 0;
       set({
         balance: b,
         isLowBalance: b <= LOW_BALANCE_THRESHOLD && b > ZERO_BALANCE_THRESHOLD,
         isZeroBalance: b <= ZERO_BALANCE_THRESHOLD,
       });
     } catch {
-      // ignore
+      // Guest fallback: query guest session tokens
+      try {
+        const guestToken = typeof window !== 'undefined' ? (sessionStorage.getItem('guest_token') || localStorage.getItem('guest_token')) : null;
+        if (guestToken) {
+          const gRes = await apiClient.get(`/guest/status?token=${guestToken}`);
+          if (gRes.data?.data?.tokens !== undefined) {
+            const b = Number(gRes.data.data.tokens);
+            set({
+              balance: b,
+              isLowBalance: b <= LOW_BALANCE_THRESHOLD && b > ZERO_BALANCE_THRESHOLD,
+              isZeroBalance: b <= ZERO_BALANCE_THRESHOLD,
+            });
+            return;
+          }
+        }
+      } catch {}
+
+      // Default welcome grant for guests
+      set((state) => ({
+        balance: state.balance > 0 ? state.balance : 10,
+        isLowBalance: false,
+        isZeroBalance: false,
+      }));
     }
   },
 

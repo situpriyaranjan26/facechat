@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createGuestSession, getGuestTimeRemaining, convertGuestToUser } from './guestService';
+import { createGuestSession, getGuestTimeRemaining, convertGuestToUser, validateGuestSession } from './guestService';
 import { requireAuth } from '../../middleware/auth';
 import { AuthenticatedRequest } from '../../types';
 
@@ -30,7 +30,8 @@ router.get('/status', async (req, res) => {
     const token = (req.query.token as string) || (req.headers['x-guest-token'] as string);
     if (!token) return res.status(400).json({ success: false, error: 'Token required' });
     const status = await getGuestTimeRemaining(token);
-    res.json({ success: true, data: status });
+    const guest = await validateGuestSession(token);
+    res.json({ success: true, data: { ...status, tokens: guest?.tokens ?? 10 } });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }

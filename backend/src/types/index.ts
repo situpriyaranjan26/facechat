@@ -102,6 +102,7 @@ export interface GuestSession {
   totalMinutesUsed: number;
   lastActiveAt: Date;
   fingerprint: string | null;
+  tokens?: number;
   isActive: boolean;
 }
 
