@@ -19,3 +19,17 @@ services:
       - key: FRONTEND_URL
         value: "*"
 
+  # FaceChat Frontend Web App (Next.js 14)
+  - type: web
+    name: facechat-frontend
+    env: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+
